@@ -173,22 +173,31 @@ export function writeSetupScripts(paths: BridgePaths, root: string, extraArgs: s
 	const command = resolveSetupCommand(root);
 	if (!command) throw new Error(`找不到授权向导入口，请在 ${root} 运行 npm install（或 npm run build）`);
 	// The `--` keeps node's own option parser away from the wizard flags
-	// (node eats known options even after the entry file). `--service-env`
-	// makes the wizard write the service config; no path ever crosses the
-	// command line.
-	const args = [...command, '--', '--service-env', '--no-start', ...extraArgs];
+	// (node eats known options even after the entry file). The script starts
+	// in the service home, so the wizard's plain `./.env` write lands on the
+	// service config — no path ever crosses the command line.
+	const args = [...command, '--', '--no-start', ...extraArgs];
 	const quoted = [process.execPath, ...args].map((part) => `"${part}"`).join(' ');
 	const scriptCmd = path.join(paths.home, 'setup.cmd');
 	const scriptSh = path.join(paths.home, 'setup.sh');
 	mkdirSync(paths.home, { recursive: true });
 	writeFileSync(
 		scriptCmd,
-		['@echo off', 'rem 由 pi-lark 生成：在独立终端中运行飞书授权向导', `${quoted}\n`].join('\r\n'),
+		[
+			'@echo off',
+			'rem 由 pi-lark 生成：在独立终端中运行飞书授权向导',
+			`cd /d "${paths.home}"`,
+			`${quoted}\n`,
+		].join('\r\n'),
 		'utf8',
 	);
 	writeFileSync(
 		scriptSh,
-		['#!/bin/sh', '# 由 pi-lark 生成：在独立终端中运行飞书授权向导', `exec ${quoted}\n`].join('\n'),
+		[
+			'#!/bin/sh',
+			'# 由 pi-lark 生成：在独立终端中运行飞书授权向导',
+			`cd "${paths.home}" && exec ${quoted}\n`,
+		].join('\n'),
 		'utf8',
 	);
 	const manualCommand = process.platform === 'win32' ? scriptCmd : `sh ${scriptSh}`;

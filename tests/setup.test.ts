@@ -14,9 +14,8 @@ describe('parseSetupArgs', () => {
 		assert.equal(args.help, false);
 	});
 
-	it('reads --service-env and --no-start for extension-driven runs', () => {
-		const args = parseSetupArgs(['--', '--service-env', '--no-start'], {});
-		assert.equal(args.serviceEnv, true);
+	it('tolerates the -- separator and reads --no-start for scripts', () => {
+		const args = parseSetupArgs(['--', '--no-start'], {});
 		assert.equal(args.start, false);
 	});
 

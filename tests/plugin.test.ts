@@ -240,8 +240,10 @@ describe('waitForBridgeReady', () => {
 			assert.ok(existsSync(plan.scriptCmd));
 			assert.ok(existsSync(plan.scriptSh));
 			const batch = readFileSync(plan.scriptCmd, 'utf8');
+			// The script starts in the service home so the wizard's plain ./.env
+			// write lands on the service config.
+			assert.match(batch, new RegExp(`cd /d "${paths.home.replace(/\\/g, '\\\\')}"`));
 			assert.match(batch, /setup\.(ts|js)" "--"/);
-			assert.match(batch, /"--service-env"/);
 			assert.match(batch, /"--no-start"/);
 			assert.match(batch, /"--app-id" "cli_x"/);
 			assert.match(plan.manualCommand, /setup\.(cmd|sh)/);

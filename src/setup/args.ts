@@ -6,8 +6,6 @@ export interface SetupArgs {
 	force: boolean;
 	/** undefined = decide after we know whether we create or update. */
 	start?: boolean;
-	/** Write credentials to the service config (`~/.pi/lark/.env`) instead of `./.env`. */
-	serviceEnv?: boolean;
 	homeChannel?: string;
 	piCwd?: string;
 	name?: string;
@@ -25,8 +23,6 @@ export const SETUP_USAGE = `用法：npm run setup -- [选项]
   --force               即使 .env 已有凭据也新建应用
   --start               配置完成后立即启动桥接器
   --no-start            只写配置，不启动
-  --service-env         写入服务配置（~/.pi/lark/.env）而非 ./.env；
-                        由 pi 扩展驱动时使用（不接受路径参数）
   --name <名称>         预填的应用名称（默认「Pi 编码助手」）
   --home <oc_xxx>       写入 FEISHU_HOME_CHANNEL（上线/告警通知的会话）
   --cwd <目录>          写入 PI_CWD（pi 的工作目录）
@@ -81,9 +77,6 @@ export function parseSetupArgs(argv: string[], env: NodeJS.ProcessEnv = process.
 				break;
 			case '--no-start':
 				args.start = false;
-				break;
-			case '--service-env':
-				args.serviceEnv = true;
 				break;
 			case '--home':
 			case '--home-channel':

@@ -12,7 +12,6 @@ import {
 	requestAppRegistration,
 } from './setup/registration.js';
 import { copyToClipboard, isRemoteSession, openUrl } from './util/system.js';
-import { resolvePaths } from './plugin/service.js';
 
 const ENV_PATH = '.env';
 
@@ -71,15 +70,9 @@ function printManualChecklist(): void {
 
 /**
  * The env file this run writes: the service config when the pi extension
- * drives the wizard (`--service-env`), otherwise the repository `.env`. The
- * path is always derived from the service home or the working directory —
- * the wizard never accepts a path on its command line.
+ * drives the wizard (`--service-env`), otherwise the repository `.env`. Path
+ * policy lives in the service layer; the wizard only passes a boolean.
  */
-function envFileFor(serviceEnv: boolean): { path: string; text: string } {
-	const file = serviceEnv ? resolvePaths().config : ENV_PATH;
-	return { path: file, text: existsSync(file) ? readFileSync(file, 'utf8') : '' };
-}
-
 async function main(): Promise<void> {
 	loadDotEnv();
 	const args = parseSetupArgs(process.argv.slice(2));
@@ -88,13 +81,10 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	// The pi extension drives this wizard with --env-file pointed at the
-	// service config, so credentials land where /lark-start reads them.
-	// The pi extension drives this wizard with --service-env, so credentials
-	// land in the service config where /lark-start reads them.
-	const target = envFileFor(args.serviceEnv === true);
-	const envPath = target.path;
-	const envText = target.text;
+	// The wizard always writes `./.env`: the pi extension's launcher script
+	// starts it with the service home as the working directory, so that is
+	// where the credentials land. No path ever crosses the command line.
+	const envText = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
 	const existing = parseEnvText(envText);
 	const knownAppId = nonEmpty(existing.FEISHU_APP_ID) ?? nonEmpty(process.env.FEISHU_APP_ID);
 	const targetAppId = args.appId ?? (args.force ? undefined : knownAppId);
@@ -154,15 +144,15 @@ async function main(): Promise<void> {
 	if (args.homeChannel) updates.FEISHU_HOME_CHANNEL = args.homeChannel;
 	if (args.piCwd) updates.PI_CWD = path.resolve(args.piCwd);
 
-	writeFileSync(envPath, mergeEnvText(envText, updates), 'utf8');
+	writeFileSync(ENV_PATH, mergeEnvText(envText, updates), 'utf8');
 	line();
 	line(`配置完成：${result.appId}${result.tenantBrand ? ` (${result.tenantBrand})` : ''}`);
-	line(`凭据已写入 ${envPath}`);
+	line(`凭据已写入 ${path.resolve(ENV_PATH)}`);
 	printManualChecklist();
 	line();
 
 	if (!shouldStart) {
-		line(args.serviceEnv ? '配置完成。回到 pi 终端，它会自动继续（也可用 /lark-start 启动桥接器）。' : '下一步：npm start    # 启动桥接器');
+		line('下一步：npm start    # 启动桥接器（由 pi 扩展启动时请用 /lark-start）');
 		return;
 	}
 
