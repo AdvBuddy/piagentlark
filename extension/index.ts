@@ -17,7 +17,7 @@ import {
 	requestAppRegistration,
 } from '../src/setup/registration.js';
 import type { RegistrationResult } from '../src/setup/registration.js';
-import { copyToClipboard, openUrl } from '../src/util/system.js';
+import { copyToClipboard, isRemoteSession, openUrl } from '../src/util/system.js';
 import type { ExtensionAPI, ExtensionCommandContext } from './pi.js';
 
 /** Repo root: the package that ships `dist/` and `node_modules/`. */
@@ -170,24 +170,31 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 			appId,
 			onUrl: (url, expireInSeconds) => {
 				const minutes = Math.max(1, Math.round((expireInSeconds || 300) / 60));
+				const remote = isRemoteSession();
 				const copied = copyToClipboard(url);
+				const clipLine = remote
+					? copied
+						? '已尝试通过终端把链接写入本地剪贴板（OSC 52）'
+						: '未能写入剪贴板，请手动复制下面的链接'
+					: copied
+						? '链接已复制到剪贴板，正在尝试在浏览器中打开…'
+						: '未能复制到剪贴板，请手动复制下面的链接';
+				const whereLine = remote
+					? 'SSH 远程会话：请在【本地】浏览器打开链接完成授权，确认后这里会自动继续'
+					: '在浏览器中完成授权，确认后这里会自动继续';
 				ctx.ui.notify(
-					[
-						`**飞书授权链接**（约 ${minutes} 分钟内有效，确认后这里会自动继续）`,
-						copied ? '链接已复制到剪贴板，正在尝试在浏览器中打开…' : '未能复制到剪贴板，请手动复制下面的链接：',
-						url,
-					].join('\n'),
+					[`**飞书授权链接**（约 ${minutes} 分钟内有效）`, clipLine, whereLine, url].join('\n'),
 					'info',
 				);
+				if (remote) return;
 				// The verdict settles on the launcher's real exit code; without a
 				// card there is no key to press, so the browser opens by itself.
-				void openUrl(url).then((opened) => {
-					ctx.ui.notify(
-						opened
-							? '已在浏览器中打开授权页面，完成后这里会自动继续。'
-							: '未能自动打开浏览器，请把剪贴板中的链接粘贴到浏览器打开。',
-						opened ? 'info' : 'warning',
-					);
+				void openUrl(url).then((outcome) => {
+					if (outcome === 'opened') {
+						ctx.ui.notify('已在浏览器中打开授权页面，完成后这里会自动继续。', 'info');
+					} else {
+						ctx.ui.notify('未能自动打开浏览器，请把剪贴板中的链接粘贴到浏览器打开。', 'warning');
+					}
 				});
 				if (expireInSeconds > 0) {
 					expiryTimer = setTimeout(() => {

@@ -52,12 +52,17 @@ function tryLaunch(child: ChildProcess, strictExit: boolean): Promise<boolean> {
 	});
 }
 
+export type OpenOutcome = 'opened' | 'remote' | 'failed';
+
 /**
  * Open `url` in the platform's default browser. Resolves once a launcher
- * actually reported success (or every option failed).
+ * actually reported success (or every option failed). Inside an SSH session
+ * there is no desktop to open a browser on — the caller is told so and can
+ * guide the user to their local browser instead.
  */
-export async function openUrl(url: string): Promise<boolean> {
-	if (!WEB_URL.test(url)) return false;
+export async function openUrl(url: string): Promise<OpenOutcome> {
+	if (!WEB_URL.test(url)) return 'failed';
+	if (isRemoteSession()) return 'remote';
 	try {
 		if (process.platform === 'win32') {
 			// `rundll32 url.dll,FileProtocolHandler` is ShellExecute without a
@@ -65,16 +70,16 @@ export async function openUrl(url: string): Promise<boolean> {
 			// flashes a console. explorer also accepts URLs but silently does
 			// nothing on some setups, so it is only the fallback.
 			if (await tryLaunch(spawn('rundll32', ['url.dll,FileProtocolHandler', url], LAUNCH_FLAGS), true)) {
-				return true;
+				return 'opened';
 			}
-			return tryLaunch(spawn('explorer', [url], LAUNCH_FLAGS), false);
+			return (await tryLaunch(spawn('explorer', [url], LAUNCH_FLAGS), false)) ? 'opened' : 'failed';
 		}
 		if (process.platform === 'darwin') {
-			return tryLaunch(spawn('open', [url], LAUNCH_FLAGS), true);
+			return (await tryLaunch(spawn('open', [url], LAUNCH_FLAGS), true)) ? 'opened' : 'failed';
 		}
-		return tryLaunch(spawn('xdg-open', [url], LAUNCH_FLAGS), true);
+		return (await tryLaunch(spawn('xdg-open', [url], LAUNCH_FLAGS), true)) ? 'opened' : 'failed';
 	} catch {
-		return false;
+		return 'failed';
 	}
 }
 
@@ -83,21 +88,51 @@ function clipOk(result: { error?: Error | null; status: number | null }): boolea
 }
 
 /**
- * Copy `text` to the system clipboard. Returns false when no clipboard tool is
- * available, which is the normal outcome over SSH or in a container. Wayland
- * tools come first on Linux: `xclip` needs an X server.
+ * True when the process runs inside an SSH session: there is no desktop here
+ * to open a browser on, and the only clipboard that matters is the user's
+ * local one, reachable through the terminal itself.
+ */
+export function isRemoteSession(): boolean {
+	return (
+		process.env.SSH_TTY !== undefined ||
+		process.env.SSH_CONNECTION !== undefined ||
+		process.env.SSH_CLIENT !== undefined
+	);
+}
+
+/**
+ * Clipboard escape sequence: the one channel that crosses an SSH session.
+ * Fire-and-forget — a terminal that does not implement OSC 52 ignores it
+ * silently, which is why callers phrase success as "tried".
+ */
+function copyViaOsc52(text: string): boolean {
+	if (!process.stdout.isTTY) return false;
+	const payload = Buffer.from(text, 'utf8').toString('base64');
+	// Oversized sequences are dropped or wedge some terminals; the links we
+	// send stay far below this, the guard is for future callers.
+	if (payload.length > 7_500) return false;
+	process.stdout.write(`\x1b]52;c;${payload}\x07`);
+	return true;
+}
+
+/**
+ * Copy `text` to the clipboard. Native tools win when a desktop is attached;
+ * over SSH (or a bare terminal) the OSC 52 sequence carries the text to the
+ * user's local clipboard instead. Returns false when nothing could be tried.
  */
 export function copyToClipboard(text: string): boolean {
 	if (text.length === 0) return false;
 	if (process.platform === 'win32') {
-		return clipOk(spawnSync('clip', [], { ...CLIPBOARD_FLAGS, input: text }));
+		return clipOk(spawnSync('clip', [], { ...CLIPBOARD_FLAGS, input: text })) || copyViaOsc52(text);
 	}
 	if (process.platform === 'darwin') {
-		return clipOk(spawnSync('pbcopy', [], { ...CLIPBOARD_FLAGS, input: text }));
+		return clipOk(spawnSync('pbcopy', [], { ...CLIPBOARD_FLAGS, input: text })) || copyViaOsc52(text);
 	}
+	// Wayland first: `xclip` needs an X server.
 	return (
 		clipOk(spawnSync('wl-copy', [], { ...CLIPBOARD_FLAGS, input: text })) ||
 		clipOk(spawnSync('xclip', ['-selection', 'clipboard'], { ...CLIPBOARD_FLAGS, input: text })) ||
-		clipOk(spawnSync('xsel', ['--clipboard', '--input'], { ...CLIPBOARD_FLAGS, input: text }))
+		clipOk(spawnSync('xsel', ['--clipboard', '--input'], { ...CLIPBOARD_FLAGS, input: text })) ||
+		copyViaOsc52(text)
 	);
 }

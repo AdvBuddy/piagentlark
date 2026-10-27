@@ -11,6 +11,7 @@ import { Logger } from './logger.js';
 import { AgentPool, SessionStore } from './pi/agentPool.js';
 import { loadDotEnv } from './util/dotenv.js';
 import { acquireInstanceLock, type InstanceLock } from './util/pid.js';
+import { isRemoteSession } from './util/system.js';
 
 /** Written once the gateway is connected; the extension polls it for readiness. */
 const STATUS_FILE = 'bridge-status.json';
@@ -41,6 +42,11 @@ async function main(): Promise<void> {
 
 	logger.info('pi-lark bridge 启动中');
 	logger.info(describeConfig(config));
+	if (config.lark.connectionMode === 'webhook' && isRemoteSession()) {
+		logger.warn(
+			'SSH 远程会话下 webhook 模式监听本机回环地址，飞书服务器无法回调；建议改用 FEISHU_CONNECTION_MODE=websocket，或为回调端口配置反向代理/端口转发',
+		);
+	}
 
 	const lock = acquireInstanceLock(lockFile(config), 'pi-lark');
 	const store = new SessionStore(config.dataDir, logger);

@@ -11,7 +11,7 @@ import {
 	registrationEnv,
 	requestAppRegistration,
 } from './setup/registration.js';
-import { copyToClipboard, openUrl } from './util/system.js';
+import { copyToClipboard, isRemoteSession, openUrl } from './util/system.js';
 
 const ENV_PATH = '.env';
 
@@ -40,13 +40,22 @@ function loadDotEnv(): void {
  * stdout.
  */
 async function showLink(url: string, expireInSeconds: number): Promise<void> {
+	const remote = isRemoteSession();
 	const copied = copyToClipboard(url);
 	line('在浏览器中打开下面的链接完成授权：');
 	line(url);
-	line(copied ? '（链接已复制到剪贴板，可直接粘贴到浏览器）' : '（未能复制到剪贴板，请手动选中上面的链接）');
-	// openUrl resolves on the launcher's real verdict, so this line is honest.
-	const opened = await openUrl(url);
-	if (!opened) line('（未能自动打开浏览器，请手动打开上面的链接）');
+	if (remote) {
+		line(copied ? '（SSH 远程会话：已尝试通过终端把链接写入本地剪贴板，请在本地浏览器打开）' : '（SSH 远程会话：未能写入剪贴板，请手动复制上面的链接并在本地浏览器打开）');
+	} else {
+		line(copied ? '（链接已复制到剪贴板，可直接粘贴到浏览器）' : '（未能复制到剪贴板，请手动选中上面的链接）');
+	}
+	// openUrl resolves on the launcher's real verdict, so these lines are honest.
+	const outcome = await openUrl(url);
+	if (outcome === 'remote') {
+		line('（不会在远端打开浏览器——请使用本地浏览器）');
+	} else if (outcome !== 'opened') {
+		line('（未能自动打开浏览器，请手动打开上面的链接）');
+	}
 	line(`有效期约 ${Math.max(1, Math.round(expireInSeconds / 60))} 分钟，确认后这里会自动继续。`);
 	line('等待确认…');
 }
