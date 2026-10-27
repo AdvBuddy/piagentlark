@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, describe, it } from 'node:test';
-import { copyToClipboard, isRemoteSession, openUrl } from '../src/util/system.js';
+import { copyToClipboard, isRemoteSession, openTerminalWindow, openUrl } from '../src/util/system.js';
 
 // Only the no-launch paths run here: a URL a launcher accepts would open a
 // real browser on the dev machine.
@@ -42,6 +42,16 @@ describe('remote sessions', () => {
 			assert.equal(await openUrl('https://example.com/ssh'), 'remote');
 		} finally {
 			delete process.env.SSH_CONNECTION;
+		}
+	});
+
+	it('never opens a terminal window inside an SSH session', async () => {
+		for (const key of ['SSH_TTY', 'SSH_CONNECTION', 'SSH_CLIENT']) delete process.env[key];
+		process.env.SSH_TTY = '/dev/pts/0';
+		try {
+			assert.equal(await openTerminalWindow([process.execPath, '-v'], 'pi-lark-test'), false);
+		} finally {
+			delete process.env.SSH_TTY;
 		}
 	});
 });

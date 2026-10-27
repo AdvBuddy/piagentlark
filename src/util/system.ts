@@ -1,5 +1,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 /**
  * Handing a URL to the OS and putting text on the clipboard.
@@ -85,6 +88,62 @@ export async function openUrl(url: string): Promise<OpenOutcome> {
 
 function clipOk(result: { error?: Error | null; status: number | null }): boolean {
 	return !result.error && result.status === 0;
+}
+
+/**
+ * Open a new terminal window running `command` (argv for the executable).
+ * Local desktops only: over SSH there is no terminal here to open, and the
+ * caller falls back to inline output. Best-effort — whether the window shows
+ * is up to the platform's terminal, so a clean spawn counts as success.
+ */
+export async function openTerminalWindow(command: string[], title: string): Promise<boolean> {
+	if (isRemoteSession()) return false;
+	const quoted = command.map((part) => (/^[^"\s]+$/u.test(part) ? part : `"${part}"`));
+	try {
+		if (process.platform === 'win32') {
+			// `start` opens the command in a fresh, visible console; the hidden
+			// cmd this runs in only dispatches and exits.
+			return await tryLaunch(
+				spawn('cmd', ['/c', 'start', title, ...quoted], {
+					stdio: 'ignore',
+					windowsHide: true,
+					detached: true,
+				}),
+				false,
+			);
+		}
+		if (process.platform === 'darwin') {
+			// Terminal.app runs scripts handed to `open`, not raw argv.
+			const script = path.join(os.tmpdir(), 'pi-lark', `${title}.command`);
+			mkdirSync(path.dirname(script), { recursive: true });
+			writeFileSync(script, `#!/bin/sh\nexec ${quoted.join(' ')}\n`, 'utf8');
+			try {
+				spawnSync('chmod', ['+x', script], { stdio: 'ignore', windowsHide: true, timeout: 3_000 });
+			} catch {
+				// Some filesystems ignore the bit; open still runs the script.
+			}
+			return await tryLaunch(
+				spawn('open', ['-a', 'Terminal', script], { stdio: 'ignore', windowsHide: true, detached: true }),
+				true,
+			);
+		}
+		const emulators: readonly (readonly [string, string])[] = [
+			['gnome-terminal', '--'],
+			['konsole', '-e'],
+			['x-terminal-emulator', '-e'],
+			['xterm', '-e'],
+		];
+		for (const [bin, flag] of emulators) {
+			if (
+				await tryLaunch(spawn(bin, [flag, ...quoted], { stdio: 'ignore', windowsHide: true, detached: true }), false)
+			) {
+				return true;
+			}
+		}
+		return false;
+	} catch {
+		return false;
+	}
 }
 
 /**

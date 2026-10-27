@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { mergeEnvText, parseEnvText } from '../setup/envFile.js';
+import type { SetupStatus } from '../setup-window.js';
 import { isProcessAlive } from '../util/pid.js';
 
 export { isProcessAlive };
@@ -133,6 +134,31 @@ export function resolveBridgeCommand(root: string): string[] | undefined {
 	if (existsSync(loader) && existsSync(entry)) return ['--import', pathToFileURL(loader).href, entry];
 	const built = path.join(root, 'dist', 'src', 'index.js');
 	if (existsSync(built)) return [built];
+	return undefined;
+}
+
+/** Live `/lark-setup` status file, rendered by the authorization window. */
+export function setupStatusFile(paths: BridgePaths): string {
+	return path.join(paths.home, 'setup-status.json');
+}
+
+export function writeSetupStatus(file: string, status: Omit<SetupStatus, 'updatedAt'>): void {
+	mkdirSync(path.dirname(file), { recursive: true });
+	writeFileSync(file, `${JSON.stringify({ ...status, updatedAt: Date.now() }, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * `node` argv that opens the live authorization window for this run. Returns
+ * undefined when neither source nor build of the viewer is installed.
+ */
+export function resolveSetupWindowCommand(root: string, statusFile: string, runId: string): string[] | undefined {
+	const loader = path.join(root, 'node_modules', 'tsx', 'dist', 'loader.mjs');
+	const entry = path.join(root, 'src', 'setup-window.ts');
+	if (existsSync(loader) && existsSync(entry)) {
+		return ['--import', pathToFileURL(loader).href, entry, statusFile, runId];
+	}
+	const built = path.join(root, 'dist', 'src', 'setup-window.js');
+	if (existsSync(built)) return [built, statusFile, runId];
 	return undefined;
 }
 

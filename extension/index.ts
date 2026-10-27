@@ -1,14 +1,18 @@
 import path from 'node:path';
+import { rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
 	readConfig,
 	resolvePaths,
+	resolveSetupWindowCommand,
 	runningBridge,
 	saveConfig,
+	setupStatusFile,
 	startBridge,
 	stopBridge,
 	tailLog,
 	waitForBridgeReady,
+	writeSetupStatus,
 } from '../src/plugin/service.js';
 import type { BridgePaths } from '../src/plugin/service.js';
 import {
@@ -17,7 +21,8 @@ import {
 	requestAppRegistration,
 } from '../src/setup/registration.js';
 import type { RegistrationResult } from '../src/setup/registration.js';
-import { copyToClipboard, isRemoteSession, openUrl } from '../src/util/system.js';
+import type { SetupStatus } from '../src/setup-window.js';
+import { copyToClipboard, isRemoteSession, openTerminalWindow, openUrl } from '../src/util/system.js';
 import type { ExtensionAPI, ExtensionCommandContext } from './pi.js';
 
 /** Repo root: the package that ships `dist/` and `node_modules/`. */
@@ -157,10 +162,29 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 		appId = createOnly ? undefined : config.FEISHU_APP_ID;
 	}
 
-	// Everything happens in the main TUI: notifications for the link and its
-	// outcome, the status bar for the waiting phase.
+	// The authorization is shown live in its own terminal window when one can
+	// be opened; otherwise everything falls back to notifications here. Both
+	// paths are driven by the same status file.
+	const statusFile = setupStatusFile(paths);
+	const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	let setupStatus: Omit<SetupStatus, 'updatedAt'> = { runId, phase: 'requesting' };
+	const updateStatus = (patch: Partial<Omit<SetupStatus, 'updatedAt'>>): void => {
+		setupStatus = { ...setupStatus, ...patch };
+		writeSetupStatus(statusFile, setupStatus);
+	};
+	updateStatus({});
+
+	const windowCommand = resolveSetupWindowCommand(PACKAGE_ROOT, statusFile, runId);
+	const windowed = windowCommand
+		? await openTerminalWindow([process.execPath, ...windowCommand], 'pi-lark-setup')
+		: false;
+	if (windowed) ctx.ui.notify('授权指引已在新终端窗口中打开；这里会在完成或失败时继续。', 'info');
+
 	ctx.ui.setStatus(STATUS_KEY, 'lark ⏳ 等待授权确认');
 	let expiryTimer: NodeJS.Timeout | undefined;
+	const inline = (message: string, type: 'info' | 'warning' = 'info'): void => {
+		if (!windowed) ctx.ui.notify(message, type);
+	};
 
 	let result: RegistrationResult;
 	try {
@@ -172,31 +196,43 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 				const minutes = Math.max(1, Math.round((expireInSeconds || 300) / 60));
 				const remote = isRemoteSession();
 				const copied = copyToClipboard(url);
-				const clipLine = remote
-					? copied
-						? '已尝试通过终端把链接写入本地剪贴板（OSC 52）'
-						: '未能写入剪贴板，请手动复制下面的链接'
-					: copied
-						? '链接已复制到剪贴板，正在尝试在浏览器中打开…'
-						: '未能复制到剪贴板，请手动复制下面的链接';
-				const whereLine = remote
-					? 'SSH 远程会话：请在【本地】浏览器打开链接完成授权，确认后这里会自动继续'
-					: '在浏览器中完成授权，确认后这里会自动继续';
-				ctx.ui.notify(
-					[`**飞书授权链接**（约 ${minutes} 分钟内有效）`, clipLine, whereLine, url].join('\n'),
-					'info',
-				);
+				updateStatus({
+					phase: 'waiting',
+					url,
+					expireAt: Date.now() + (expireInSeconds || 300) * 1_000,
+					copied,
+					...(remote ? { opened: 'remote' as const } : {}),
+				});
+				if (!windowed) {
+					const clipLine = remote
+						? copied
+							? '已尝试通过终端把链接写入本地剪贴板（OSC 52）'
+							: '未能写入剪贴板，请手动复制下面的链接'
+						: copied
+							? '链接已复制到剪贴板，正在尝试在浏览器中打开…'
+							: '未能复制到剪贴板，请手动复制下面的链接';
+					const whereLine = remote
+						? 'SSH 远程会话：请在【本地】浏览器打开链接完成授权，确认后这里会自动继续'
+						: '在浏览器中完成授权，确认后这里会自动继续';
+					ctx.ui.notify(
+						[`**飞书授权链接**（约 ${minutes} 分钟内有效）`, clipLine, whereLine, url].join('\n'),
+						'info',
+					);
+				}
 				if (remote) return;
 				// The verdict settles on the launcher's real exit code; without a
 				// card there is no key to press, so the browser opens by itself.
 				void openUrl(url).then((outcome) => {
-					if (outcome === 'opened') {
-						ctx.ui.notify('已在浏览器中打开授权页面，完成后这里会自动继续。', 'info');
-					} else {
-						ctx.ui.notify('未能自动打开浏览器，请把剪贴板中的链接粘贴到浏览器打开。', 'warning');
+					updateStatus({ opened: outcome });
+					if (!windowed) {
+						if (outcome === 'opened') {
+							ctx.ui.notify('已在浏览器中打开授权页面，完成后这里会自动继续。', 'info');
+						} else {
+							ctx.ui.notify('未能自动打开浏览器，请把剪贴板中的链接粘贴到浏览器打开。', 'warning');
+						}
 					}
 				});
-				if (expireInSeconds > 0) {
+				if (!windowed && expireInSeconds > 0) {
 					expiryTimer = setTimeout(() => {
 						ctx.ui.notify('授权链接可能已过期，若长时间没有响应，请重新运行 /lark-setup 获取新链接。', 'warning');
 					}, expireInSeconds * 1_000);
@@ -205,20 +241,31 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 			},
 			onStatus: (status) => {
 				if (status === 'slow_down') {
-					ctx.ui.notify('仍在等待确认（平台要求降低轮询频率）…', 'info');
+					inline('仍在等待确认（平台要求降低轮询频率）…');
 				}
 			},
 		});
 	} catch (error) {
 		const failure =
 			error instanceof RegistrationError ? error : new RegistrationError(undefined, describe(error));
+		updateStatus({ phase: 'failed', error: failure.message, hint: failure.hint });
 		ctx.ui.notify(`配置失败：${failure.message}${failure.hint ? `\n${failure.hint}` : ''}`, 'error');
 		return;
 	} finally {
 		if (expiryTimer) clearTimeout(expiryTimer);
 		refreshStatus(ctx, paths);
+		// Leave the final frame for the window to read, then take the file away.
+		const cleanup = setTimeout(() => {
+			try {
+				rmSync(statusFile, { force: true });
+			} catch {
+				// Best effort only.
+			}
+		}, 60_000);
+		cleanup.unref();
 	}
 
+	updateStatus({ phase: 'done', appId: result.appId });
 	saveConfig(paths, registrationEnv(result));
 	ctx.ui.notify(`已保存 ${result.appId}（${result.domain}）→ ${paths.config}`, 'info');
 	if (!runningBridge(paths) && (await ctx.ui.confirm('启动', '现在启动 pi-lark 并连接飞书？'))) {
