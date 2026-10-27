@@ -99,48 +99,33 @@ function clipOk(result: { error?: Error | null; status: number | null }): boolea
 export async function openTerminalWindow(command: string[], title: string): Promise<boolean> {
 	if (isRemoteSession()) return false;
 	const quoted = command.map((part) => (/^[^"\s]+$/u.test(part) ? part : `"${part}"`));
+	// POSIX single-quoting for the macOS script below: a quoted word can never
+	// be re-parsed into several words or a command substitution.
+	const shQuoted = command.map((part) => `'${part.replace(/'/g, `'\\''`)}'`);
+	const windowFlags = { stdio: 'ignore' as const, windowsHide: true, detached: true };
 	try {
 		if (process.platform === 'win32') {
 			// `start` opens the command in a fresh, visible console; the hidden
 			// cmd this runs in only dispatches and exits.
-			return await tryLaunch(
-				spawn('cmd', ['/c', 'start', title, ...quoted], {
-					stdio: 'ignore',
-					windowsHide: true,
-					detached: true,
-				}),
-				false,
-			);
+			return await tryLaunch(spawn('cmd', ['/c', 'start', title, ...quoted], windowFlags), false);
 		}
 		if (process.platform === 'darwin') {
 			// Terminal.app runs scripts handed to `open`, not raw argv.
 			const script = path.join(os.tmpdir(), 'pi-lark', `${title}.command`);
 			mkdirSync(path.dirname(script), { recursive: true });
-			writeFileSync(script, `#!/bin/sh\nexec ${quoted.join(' ')}\n`, 'utf8');
+			writeFileSync(script, `#!/bin/sh\nexec ${shQuoted.join(' ')}\n`, 'utf8');
 			try {
 				spawnSync('chmod', ['+x', script], { stdio: 'ignore', windowsHide: true, timeout: 3_000 });
 			} catch {
 				// Some filesystems ignore the bit; open still runs the script.
 			}
-			return await tryLaunch(
-				spawn('open', ['-a', 'Terminal', script], { stdio: 'ignore', windowsHide: true, detached: true }),
-				true,
-			);
+			return await tryLaunch(spawn('open', ['-a', 'Terminal', script], windowFlags), true);
 		}
-		const emulators: readonly (readonly [string, string])[] = [
-			['gnome-terminal', '--'],
-			['konsole', '-e'],
-			['x-terminal-emulator', '-e'],
-			['xterm', '-e'],
-		];
-		for (const [bin, flag] of emulators) {
-			if (
-				await tryLaunch(spawn(bin, [flag, ...quoted], { stdio: 'ignore', windowsHide: true, detached: true }), false)
-			) {
-				return true;
-			}
-		}
-		return false;
+		// Common Linux emulators, each taking the command as plain argv.
+		if (await tryLaunch(spawn('gnome-terminal', ['--', ...quoted], windowFlags), false)) return true;
+		if (await tryLaunch(spawn('konsole', ['-e', ...quoted], windowFlags), false)) return true;
+		if (await tryLaunch(spawn('x-terminal-emulator', ['-e', ...quoted], windowFlags), false)) return true;
+		return tryLaunch(spawn('xterm', ['-e', ...quoted], windowFlags), false);
 	} catch {
 		return false;
 	}
