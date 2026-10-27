@@ -55,7 +55,7 @@ interface Note {
 
 export interface LinkOverlayOptions {
 	/** Hands the URL to the browser; overridable so tests never open one. */
-	open?: (url: string) => boolean;
+	open?: (url: string) => boolean | Promise<boolean>;
 	/** Puts the URL on the clipboard; overridable so tests never touch it. */
 	copy?: (text: string) => boolean;
 	/** Asks pi for a repaint; drives the waiting-time / expiry line. */
@@ -85,7 +85,7 @@ export class LinkOverlay implements ExtensionComponent {
 	private readonly theme: ExtensionTheme;
 	private readonly done: () => void;
 	private readonly onCancel: () => void;
-	private readonly open: (url: string) => boolean;
+	private readonly open: (url: string) => boolean | Promise<boolean>;
 	private readonly copy: (text: string) => boolean;
 	private readonly requestRender: (() => void) | undefined;
 	private readonly tickMs: number;
@@ -96,6 +96,7 @@ export class LinkOverlay implements ExtensionComponent {
 	private error: string | undefined;
 	private closed = false;
 	private showFullUrl = false;
+	private opening = false;
 	private linkAt = 0;
 	private expireSeconds = 0;
 	private timer: NodeJS.Timeout | undefined;
@@ -168,10 +169,21 @@ export class LinkOverlay implements ExtensionComponent {
 	}
 
 	private reveal(): void {
-		if (!this.url) return;
-		this.note = this.open(this.url)
-			? { text: '已在浏览器中打开链接', warn: false }
-			: { text: '无法自动打开浏览器，请按 c 复制后手动粘贴', warn: true };
+		if (!this.url || this.opening) return;
+		this.opening = true;
+		// The launcher's real verdict arrives asynchronously (spawn errors and
+		// exit codes are events), so show a provisional note and correct it —
+		// claiming success before anything opened is worse than a short wait.
+		this.note = { text: '正在打开浏览器…', warn: false };
+		this.requestRender?.();
+		const settle = (ok: boolean): void => {
+			this.opening = false;
+			this.note = ok
+				? { text: '已在浏览器中打开链接', warn: false }
+				: { text: '无法自动打开浏览器，请按 c 复制后手动粘贴', warn: true };
+			this.requestRender?.();
+		};
+		Promise.resolve(this.open(this.url)).then(settle, () => settle(false));
 	}
 
 	private copyUrl(): void {

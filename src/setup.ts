@@ -39,12 +39,13 @@ function loadDotEnv(): void {
  * select by hand, so it goes to the clipboard and to the browser as well as to
  * stdout.
  */
-function showLink(url: string, expireInSeconds: number): void {
+async function showLink(url: string, expireInSeconds: number): Promise<void> {
 	const copied = copyToClipboard(url);
-	const opened = openUrl(url);
 	line('在浏览器中打开下面的链接完成授权：');
 	line(url);
 	line(copied ? '（链接已复制到剪贴板，可直接粘贴到浏览器）' : '（未能复制到剪贴板，请手动选中上面的链接）');
+	// openUrl resolves on the launcher's real verdict, so this line is honest.
+	const opened = await openUrl(url);
 	if (!opened) line('（未能自动打开浏览器，请手动打开上面的链接）');
 	line(`有效期约 ${Math.max(1, Math.round(expireInSeconds / 60))} 分钟，确认后这里会自动继续。`);
 	line('等待确认…');
@@ -100,7 +101,7 @@ async function main(): Promise<void> {
 			name: args.name ?? DEFAULT_APP_NAME,
 			desc: DEFAULT_APP_DESC,
 			onUrl: (url, expireInSeconds) => {
-				showLink(url, expireInSeconds);
+				void showLink(url, expireInSeconds);
 			},
 			onStatus: (status) => {
 				if (status === 'slow_down') line('仍在等待确认（平台要求降低轮询频率）…');

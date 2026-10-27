@@ -375,7 +375,7 @@ describe('link card', () => {
 		assert.match(overlay.render(100).join('\n'), /可能已过期/);
 	});
 
-	it('opens and copies the link on demand', () => {
+	it('opens and copies the link on demand', async () => {
 		const theme: ExtensionTheme = { fg: (_color, text) => text };
 		const copied: string[] = [];
 		const opened: string[] = [];
@@ -391,6 +391,9 @@ describe('link card', () => {
 		});
 		overlay.setUrl(url);
 		overlay.handleInput('o');
+		// The open verdict settles on a microtask, not during handleInput.
+		assert.match(overlay.render(100).join('\n'), /正在打开浏览器/);
+		await new Promise((resolve) => setImmediate(resolve));
 		assert.deepEqual(opened, [url]);
 		assert.match(overlay.render(100).join('\n'), /已在浏览器中打开链接/);
 		overlay.handleInput('c');
@@ -398,7 +401,7 @@ describe('link card', () => {
 		assert.match(overlay.render(100).join('\n'), /链接已复制到剪贴板/);
 	});
 
-	it('says so when the clipboard or the browser is unavailable', () => {
+	it('says so when the clipboard or the browser is unavailable', async () => {
 		const theme: ExtensionTheme = { fg: (_color, text) => text };
 		const overlay = new LinkOverlay(theme, () => undefined, () => undefined, {
 			copy: () => false,
@@ -407,6 +410,7 @@ describe('link card', () => {
 		overlay.setUrl(url);
 		assert.match(overlay.render(100).join('\n'), /链接复制失败/);
 		overlay.handleInput('o');
+		await new Promise((resolve) => setImmediate(resolve));
 		assert.match(overlay.render(100).join('\n'), /无法自动打开浏览器/);
 	});
 
