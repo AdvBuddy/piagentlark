@@ -1,8 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 
 /**
  * Handing a URL to the OS and putting text on the clipboard.
@@ -88,47 +85,6 @@ export async function openUrl(url: string): Promise<OpenOutcome> {
 
 function clipOk(result: { error?: Error | null; status: number | null }): boolean {
 	return !result.error && result.status === 0;
-}
-
-/**
- * Open a new terminal window running `command` (argv for the executable).
- * Local desktops only: over SSH there is no terminal here to open, and the
- * caller falls back to inline output. Best-effort — whether the window shows
- * is up to the platform's terminal, so a clean spawn counts as success.
- */
-export async function openTerminalWindow(command: string[], title: string): Promise<boolean> {
-	if (isRemoteSession()) return false;
-	const quoted = command.map((part) => (/^[^"\s]+$/u.test(part) ? part : `"${part}"`));
-	// POSIX single-quoting for the macOS script below: a quoted word can never
-	// be re-parsed into several words or a command substitution.
-	const shQuoted = command.map((part) => `'${part.replace(/'/g, `'\\''`)}'`);
-	const windowFlags = { stdio: 'ignore' as const, windowsHide: true, detached: true };
-	try {
-		if (process.platform === 'win32') {
-			// `start` opens the command in a fresh, visible console; the hidden
-			// cmd this runs in only dispatches and exits.
-			return await tryLaunch(spawn('cmd', ['/c', 'start', title, ...quoted], windowFlags), false);
-		}
-		if (process.platform === 'darwin') {
-			// Terminal.app runs scripts handed to `open`, not raw argv.
-			const script = path.join(os.tmpdir(), 'pi-lark', `${title}.command`);
-			mkdirSync(path.dirname(script), { recursive: true });
-			writeFileSync(script, `#!/bin/sh\nexec ${shQuoted.join(' ')}\n`, 'utf8');
-			try {
-				spawnSync('chmod', ['+x', script], { stdio: 'ignore', windowsHide: true, timeout: 3_000 });
-			} catch {
-				// Some filesystems ignore the bit; open still runs the script.
-			}
-			return await tryLaunch(spawn('open', ['-a', 'Terminal', script], windowFlags), true);
-		}
-		// Common Linux emulators, each taking the command as plain argv.
-		if (await tryLaunch(spawn('gnome-terminal', ['--', ...quoted], windowFlags), false)) return true;
-		if (await tryLaunch(spawn('konsole', ['-e', ...quoted], windowFlags), false)) return true;
-		if (await tryLaunch(spawn('x-terminal-emulator', ['-e', ...quoted], windowFlags), false)) return true;
-		return tryLaunch(spawn('xterm', ['-e', ...quoted], windowFlags), false);
-	} catch {
-		return false;
-	}
 }
 
 /**

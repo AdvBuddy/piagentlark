@@ -1,18 +1,18 @@
 import path from 'node:path';
-import { rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
 	readConfig,
 	resolvePaths,
-	resolveSetupWindowCommand,
 	runningBridge,
 	saveConfig,
-	setupStatusFile,
+	setupSnapshot,
 	startBridge,
 	stopBridge,
 	tailLog,
 	waitForBridgeReady,
-	writeSetupStatus,
+	waitForSetupCredentials,
+	writeSetupScripts,
 } from '../src/plugin/service.js';
 import type { BridgePaths } from '../src/plugin/service.js';
 import {
@@ -21,8 +21,7 @@ import {
 	requestAppRegistration,
 } from '../src/setup/registration.js';
 import type { RegistrationResult } from '../src/setup/registration.js';
-import type { SetupStatus } from '../src/setup-window.js';
-import { copyToClipboard, isRemoteSession, openTerminalWindow, openUrl } from '../src/util/system.js';
+import { copyToClipboard, isRemoteSession, openUrl } from '../src/util/system.js';
 import type { ExtensionAPI, ExtensionCommandContext } from './pi.js';
 
 /** Repo root: the package that ships `dist/` and `node_modules/`. */
@@ -161,78 +160,125 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 		createOnly = choice.startsWith('新建');
 		appId = createOnly ? undefined : config.FEISHU_APP_ID;
 	}
+	const target = { createOnly, appId };
 
-	// The authorization is shown live in its own terminal window when one can
-	// be opened; otherwise everything falls back to notifications here. Both
-	// paths are driven by the same status file.
-	const statusFile = setupStatusFile(paths);
-	const runId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-	let setupStatus: Omit<SetupStatus, 'updatedAt'> = { runId, phase: 'requesting' };
-	const updateStatus = (patch: Partial<Omit<SetupStatus, 'updatedAt'>>): void => {
-		setupStatus = { ...setupStatus, ...patch };
-		writeSetupStatus(statusFile, setupStatus);
-	};
-	updateStatus({});
+	// pi's TUI cannot hand its terminal over (no suspend API, and Windows has
+	// no job control), so in TUI mode the wizard runs in a separate terminal
+	// and pi picks up the credentials when it finishes.
+	if (ctx.mode === 'tui' && ctx.hasUI) {
+		await runSetupInTerminal(ctx, paths, target);
+		return;
+	}
+	await runSetupInline(ctx, paths, target);
+}
 
-	const windowCommand = resolveSetupWindowCommand(PACKAGE_ROOT, statusFile, runId);
-	const windowed = windowCommand
-		? await openTerminalWindow([process.execPath, ...windowCommand], 'pi-lark-setup')
-		: false;
-	if (windowed) ctx.ui.notify('授权指引已在新终端窗口中打开；这里会在完成或失败时继续。', 'info');
+interface SetupTarget {
+	createOnly: boolean;
+	appId?: string;
+}
+
+/** Open the wizard in its own console window; false when that is not possible. */
+function openWizardWindow(scriptCmd: string): boolean {
+	// `start` opens a fresh console for the wizard; the relaying cmd shares
+	// pi's console and exits immediately, so nothing flashes.
+	try {
+		const child = spawn('cmd', ['/c', 'start', '', scriptCmd], { detached: true, stdio: 'ignore' });
+		child.on('error', () => undefined);
+		child.unref();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+async function runSetupInTerminal(
+	ctx: ExtensionCommandContext,
+	paths: BridgePaths,
+	target: SetupTarget,
+): Promise<void> {
+	let manualCommand: string;
+	let scriptCmd: string;
+	try {
+		const extraArgs = [
+			...(target.createOnly ? ['--force'] : target.appId ? ['--app-id', target.appId] : []),
+			...(readConfig(paths).FEISHU_DOMAIN === 'lark' ? ['--lark'] : []),
+		];
+		const plan = writeSetupScripts(paths, PACKAGE_ROOT, extraArgs);
+		manualCommand = plan.manualCommand;
+		scriptCmd = plan.scriptCmd;
+	} catch (error) {
+		ctx.ui.notify(describe(error), 'error');
+		return;
+	}
 
 	ctx.ui.setStatus(STATUS_KEY, 'lark ⏳ 等待授权确认');
+	const opened = process.platform === 'win32' && !isRemoteSession() && openWizardWindow(scriptCmd);
+	const how = opened
+		? '已在新终端窗口中打开授权向导'
+		: isRemoteSession()
+			? 'SSH 远程会话，请另开一个终端运行下面的命令'
+			: '请新开一个终端标签/窗口运行下面的命令';
+	ctx.ui.notify(
+		[
+			'**飞书授权**：流程在独立终端中进行，pi 界面保持不动，完成后这里会自动继续。',
+			`${how}${opened ? '' : `：\n\`${manualCommand}\``}`,
+		].join('\n'),
+		'info',
+	);
+
+	const appId = await waitForSetupCredentials(paths, setupSnapshot(paths), 10 * 60_000);
+	refreshStatus(ctx, paths);
+	if (!appId) {
+		ctx.ui.notify('等待授权超时（10 分钟）。配置写入后可运行 /lark-start，或重新运行 /lark-setup。', 'warning');
+		return;
+	}
+	ctx.ui.notify(`授权完成：${appId}（配置已写入 ${paths.config}）`, 'info');
+	if (!runningBridge(paths) && (await ctx.ui.confirm('启动', '现在启动 pi-lark 并连接飞书？'))) {
+		await startService(ctx, paths);
+	}
+}
+
+async function runSetupInline(ctx: ExtensionCommandContext, paths: BridgePaths, target: SetupTarget): Promise<void> {
+	// Everything happens in the main TUI: notifications for the link and its
+	// outcome, the status bar for the waiting phase.
+	ctx.ui.setStatus(STATUS_KEY, 'lark ⏳ 等待授权确认');
 	let expiryTimer: NodeJS.Timeout | undefined;
-	const inline = (message: string, type: 'info' | 'warning' = 'info'): void => {
-		if (!windowed) ctx.ui.notify(message, type);
-	};
 
 	let result: RegistrationResult;
 	try {
 		result = await requestAppRegistration({
-			domain: config.FEISHU_DOMAIN === 'lark' ? 'lark' : 'feishu',
-			createOnly,
-			appId,
+			domain: readConfig(paths).FEISHU_DOMAIN === 'lark' ? 'lark' : 'feishu',
+			createOnly: target.createOnly,
+			appId: target.appId,
 			onUrl: (url, expireInSeconds) => {
 				const minutes = Math.max(1, Math.round((expireInSeconds || 300) / 60));
 				const remote = isRemoteSession();
 				const copied = copyToClipboard(url);
-				updateStatus({
-					phase: 'waiting',
-					url,
-					expireAt: Date.now() + (expireInSeconds || 300) * 1_000,
-					copied,
-					...(remote ? { opened: 'remote' as const } : {}),
-				});
-				if (!windowed) {
-					const clipLine = remote
-						? copied
-							? '已尝试通过终端把链接写入本地剪贴板（OSC 52）'
-							: '未能写入剪贴板，请手动复制下面的链接'
-						: copied
-							? '链接已复制到剪贴板，正在尝试在浏览器中打开…'
-							: '未能复制到剪贴板，请手动复制下面的链接';
-					const whereLine = remote
-						? 'SSH 远程会话：请在【本地】浏览器打开链接完成授权，确认后这里会自动继续'
-						: '在浏览器中完成授权，确认后这里会自动继续';
-					ctx.ui.notify(
-						[`**飞书授权链接**（约 ${minutes} 分钟内有效）`, clipLine, whereLine, url].join('\n'),
-						'info',
-					);
-				}
+				const clipLine = remote
+					? copied
+						? '已尝试通过终端把链接写入本地剪贴板（OSC 52）'
+						: '未能写入剪贴板，请手动复制下面的链接'
+					: copied
+						? '链接已复制到剪贴板，正在尝试在浏览器中打开…'
+						: '未能复制到剪贴板，请手动复制下面的链接';
+				const whereLine = remote
+					? 'SSH 远程会话：请在【本地】浏览器打开链接完成授权，确认后这里会自动继续'
+					: '在浏览器中完成授权，确认后这里会自动继续';
+				ctx.ui.notify(
+					[`**飞书授权链接**（约 ${minutes} 分钟内有效）`, clipLine, whereLine, url].join('\n'),
+					'info',
+				);
 				if (remote) return;
 				// The verdict settles on the launcher's real exit code; without a
 				// card there is no key to press, so the browser opens by itself.
 				void openUrl(url).then((outcome) => {
-					updateStatus({ opened: outcome });
-					if (!windowed) {
-						if (outcome === 'opened') {
-							ctx.ui.notify('已在浏览器中打开授权页面，完成后这里会自动继续。', 'info');
-						} else {
-							ctx.ui.notify('未能自动打开浏览器，请把剪贴板中的链接粘贴到浏览器打开。', 'warning');
-						}
+					if (outcome === 'opened') {
+						ctx.ui.notify('已在浏览器中打开授权页面，完成后这里会自动继续。', 'info');
+					} else {
+						ctx.ui.notify('未能自动打开浏览器，请把剪贴板中的链接粘贴到浏览器打开。', 'warning');
 					}
 				});
-				if (!windowed && expireInSeconds > 0) {
+				if (expireInSeconds > 0) {
 					expiryTimer = setTimeout(() => {
 						ctx.ui.notify('授权链接可能已过期，若长时间没有响应，请重新运行 /lark-setup 获取新链接。', 'warning');
 					}, expireInSeconds * 1_000);
@@ -241,31 +287,20 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 			},
 			onStatus: (status) => {
 				if (status === 'slow_down') {
-					inline('仍在等待确认（平台要求降低轮询频率）…');
+					ctx.ui.notify('仍在等待确认（平台要求降低轮询频率）…', 'info');
 				}
 			},
 		});
 	} catch (error) {
 		const failure =
 			error instanceof RegistrationError ? error : new RegistrationError(undefined, describe(error));
-		updateStatus({ phase: 'failed', error: failure.message, hint: failure.hint });
 		ctx.ui.notify(`配置失败：${failure.message}${failure.hint ? `\n${failure.hint}` : ''}`, 'error');
 		return;
 	} finally {
 		if (expiryTimer) clearTimeout(expiryTimer);
 		refreshStatus(ctx, paths);
-		// Leave the final frame for the window to read, then take the file away.
-		const cleanup = setTimeout(() => {
-			try {
-				rmSync(statusFile, { force: true });
-			} catch {
-				// Best effort only.
-			}
-		}, 60_000);
-		cleanup.unref();
 	}
 
-	updateStatus({ phase: 'done', appId: result.appId });
 	saveConfig(paths, registrationEnv(result));
 	ctx.ui.notify(`已保存 ${result.appId}（${result.domain}）→ ${paths.config}`, 'info');
 	if (!runningBridge(paths) && (await ctx.ui.confirm('启动', '现在启动 pi-lark 并连接飞书？'))) {

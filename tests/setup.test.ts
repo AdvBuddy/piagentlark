@@ -14,6 +14,12 @@ describe('parseSetupArgs', () => {
 		assert.equal(args.help, false);
 	});
 
+	it('reads --service-env and --no-start for extension-driven runs', () => {
+		const args = parseSetupArgs(['--', '--service-env', '--no-start'], {});
+		assert.equal(args.serviceEnv, true);
+		assert.equal(args.start, false);
+	});
+
 	it('honours FEISHU_DOMAIN but lets flags win', () => {
 		assert.equal(parseSetupArgs([], { FEISHU_DOMAIN: 'lark' }).domain, 'lark');
 		assert.equal(parseSetupArgs(['--feishu'], { FEISHU_DOMAIN: 'lark' }).domain, 'feishu');

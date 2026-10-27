@@ -12,6 +12,7 @@ import {
 	requestAppRegistration,
 } from './setup/registration.js';
 import { copyToClipboard, isRemoteSession, openUrl } from './util/system.js';
+import { resolvePaths } from './plugin/service.js';
 
 const ENV_PATH = '.env';
 
@@ -68,6 +69,17 @@ function printManualChecklist(): void {
 	line('  · 事件订阅方式选「长连接 / WebSocket」，并在版本管理与发布中发版、由管理员通过');
 }
 
+/**
+ * The env file this run writes: the service config when the pi extension
+ * drives the wizard (`--service-env`), otherwise the repository `.env`. The
+ * path is always derived from the service home or the working directory —
+ * the wizard never accepts a path on its command line.
+ */
+function envFileFor(serviceEnv: boolean): { path: string; text: string } {
+	const file = serviceEnv ? resolvePaths().config : ENV_PATH;
+	return { path: file, text: existsSync(file) ? readFileSync(file, 'utf8') : '' };
+}
+
 async function main(): Promise<void> {
 	loadDotEnv();
 	const args = parseSetupArgs(process.argv.slice(2));
@@ -76,7 +88,13 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const envText = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
+	// The pi extension drives this wizard with --env-file pointed at the
+	// service config, so credentials land where /lark-start reads them.
+	// The pi extension drives this wizard with --service-env, so credentials
+	// land in the service config where /lark-start reads them.
+	const target = envFileFor(args.serviceEnv === true);
+	const envPath = target.path;
+	const envText = target.text;
 	const existing = parseEnvText(envText);
 	const knownAppId = nonEmpty(existing.FEISHU_APP_ID) ?? nonEmpty(process.env.FEISHU_APP_ID);
 	const targetAppId = args.appId ?? (args.force ? undefined : knownAppId);
@@ -136,15 +154,15 @@ async function main(): Promise<void> {
 	if (args.homeChannel) updates.FEISHU_HOME_CHANNEL = args.homeChannel;
 	if (args.piCwd) updates.PI_CWD = path.resolve(args.piCwd);
 
-	writeFileSync(ENV_PATH, mergeEnvText(envText, updates), 'utf8');
+	writeFileSync(envPath, mergeEnvText(envText, updates), 'utf8');
 	line();
 	line(`配置完成：${result.appId}${result.tenantBrand ? ` (${result.tenantBrand})` : ''}`);
-	line(`凭据已写入 ${path.resolve(ENV_PATH)}`);
+	line(`凭据已写入 ${envPath}`);
 	printManualChecklist();
 	line();
 
 	if (!shouldStart) {
-		line('下一步：npm start    # 启动桥接器');
+		line(args.serviceEnv ? '配置完成。回到 pi 终端，它会自动继续（也可用 /lark-start 启动桥接器）。' : '下一步：npm start    # 启动桥接器');
 		return;
 	}
 
