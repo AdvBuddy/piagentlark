@@ -17,8 +17,8 @@ import {
 	requestAppRegistration,
 } from '../src/setup/registration.js';
 import type { RegistrationResult } from '../src/setup/registration.js';
+import { copyToClipboard, openUrl } from '../src/util/system.js';
 import type { ExtensionAPI, ExtensionCommandContext } from './pi.js';
-import { LinkOverlay, linkOverlayWidth } from './link.js';
 
 /** Repo root: the package that ships `dist/` and `node_modules/`. */
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -157,28 +157,10 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 		appId = createOnly ? undefined : config.FEISHU_APP_ID;
 	}
 
-	const controller = new AbortController();
-	let overlay: LinkOverlay | undefined;
-	let tui: { requestRender(force?: boolean): void } | undefined;
-	let closed: Promise<void> | undefined;
-	if (ctx.mode === 'tui') {
-		closed = ctx.ui.custom<void>(
-			(tuiRef, theme, _keybindings, done) => {
-				tui = tuiRef;
-				overlay = new LinkOverlay(theme, done, () => controller.abort(), {
-					// The card ticks once a second (validity window / wait time).
-					requestRender: () => tui?.requestRender(),
-				});
-				return overlay;
-			},
-			{
-				overlay: true,
-				// pi caps overlays at 80 columns by default; the card asks for a bit
-				// more so a long URL wraps in fewer rows.
-				overlayOptions: { width: linkOverlayWidth(), margin: 1 },
-			},
-		);
-	}
+	// Everything happens in the main TUI: notifications for the link and its
+	// outcome, the status bar for the waiting phase.
+	ctx.ui.setStatus(STATUS_KEY, 'lark ⏳ 等待授权确认');
+	let expiryTimer: NodeJS.Timeout | undefined;
 
 	let result: RegistrationResult;
 	try {
@@ -186,37 +168,50 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 			domain: config.FEISHU_DOMAIN === 'lark' ? 'lark' : 'feishu',
 			createOnly,
 			appId,
-			signal: controller.signal,
 			onUrl: (url, expireInSeconds) => {
-				if (overlay) {
-					overlay.setUrl(url, expireInSeconds);
-					tui?.requestRender();
-				} else {
-					const validity =
-						expireInSeconds && expireInSeconds > 0
-							? `（约 ${Math.max(1, Math.round(expireInSeconds / 60))} 分钟内有效）`
-							: '';
-					ctx.ui.notify(`打开链接完成授权${validity}：${url}`, 'info');
+				const minutes = Math.max(1, Math.round((expireInSeconds || 300) / 60));
+				const copied = copyToClipboard(url);
+				ctx.ui.notify(
+					[
+						`**飞书授权链接**（约 ${minutes} 分钟内有效，确认后这里会自动继续）`,
+						copied ? '链接已复制到剪贴板，正在尝试在浏览器中打开…' : '未能复制到剪贴板，请手动复制下面的链接：',
+						url,
+					].join('\n'),
+					'info',
+				);
+				// The verdict settles on the launcher's real exit code; without a
+				// card there is no key to press, so the browser opens by itself.
+				void openUrl(url).then((opened) => {
+					ctx.ui.notify(
+						opened
+							? '已在浏览器中打开授权页面，完成后这里会自动继续。'
+							: '未能自动打开浏览器，请把剪贴板中的链接粘贴到浏览器打开。',
+						opened ? 'info' : 'warning',
+					);
+				});
+				if (expireInSeconds > 0) {
+					expiryTimer = setTimeout(() => {
+						ctx.ui.notify('授权链接可能已过期，若长时间没有响应，请重新运行 /lark-setup 获取新链接。', 'warning');
+					}, expireInSeconds * 1_000);
+					expiryTimer.unref();
 				}
 			},
 			onStatus: (status) => {
-				if (status !== 'slow_down' || !overlay) return;
-				overlay.setStatus('仍在等待确认（平台要求降低轮询频率）…');
-				tui?.requestRender();
+				if (status === 'slow_down') {
+					ctx.ui.notify('仍在等待确认（平台要求降低轮询频率）…', 'info');
+				}
 			},
 		});
 	} catch (error) {
 		const failure =
 			error instanceof RegistrationError ? error : new RegistrationError(undefined, describe(error));
-		overlay?.finish();
-		if (closed) await closed;
-		if (failure.code === 'abort') ctx.ui.notify('已取消配置', 'info');
-		else ctx.ui.notify(`配置失败：${failure.message}${failure.hint ? `\n${failure.hint}` : ''}`, 'error');
+		ctx.ui.notify(`配置失败：${failure.message}${failure.hint ? `\n${failure.hint}` : ''}`, 'error');
 		return;
+	} finally {
+		if (expiryTimer) clearTimeout(expiryTimer);
+		refreshStatus(ctx, paths);
 	}
 
-	overlay?.finish();
-	if (closed) await closed;
 	saveConfig(paths, registrationEnv(result));
 	ctx.ui.notify(`已保存 ${result.appId}（${result.domain}）→ ${paths.config}`, 'info');
 	if (!runningBridge(paths) && (await ctx.ui.confirm('启动', '现在启动 pi-lark 并连接飞书？'))) {
