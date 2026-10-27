@@ -297,6 +297,84 @@ describe('link card', () => {
 		assert.ok(overlay.render(100).every((line) => displayWidth(line) <= 100));
 	});
 
+	it('shows a compact preview with the validity window instead of the raw link', () => {
+		const theme: ExtensionTheme = { fg: (_color, text) => text };
+		const overlay = new LinkOverlay(theme, () => undefined, () => undefined, {
+			copy: () => true,
+			open: () => true,
+		});
+		overlay.setUrl(url, 300);
+		const rendered = overlay.render(100).join('\n');
+		assert.match(rendered, /open\.feishu\.cn\/page\/launcher\?…/);
+		assert.match(rendered, /链接约 5 分钟内有效/);
+		// The 600-character tail stays off-screen until asked for.
+		assert.doesNotMatch(rendered, /A{50}/);
+	});
+
+	it('expands the full link on l and collapses it again', () => {
+		const theme: ExtensionTheme = { fg: (_color, text) => text };
+		const overlay = new LinkOverlay(theme, () => undefined, () => undefined, {
+			copy: () => true,
+			open: () => true,
+		});
+		overlay.setUrl(url);
+		overlay.handleInput('l');
+		// The expanded card shows the raw link again, hard-wrapped to the box.
+		const expanded = overlay.render(100).join('\n');
+		assert.match(expanded, /A{20}/);
+		assert.match(expanded, /收起链接/);
+		overlay.handleInput('l');
+		assert.doesNotMatch(overlay.render(100).join('\n'), /A{20}/);
+	});
+
+	it('opens the browser on Enter as well', () => {
+		const theme: ExtensionTheme = { fg: (_color, text) => text };
+		const opened: string[] = [];
+		const overlay = new LinkOverlay(theme, () => undefined, () => undefined, {
+			copy: () => true,
+			open: (target) => {
+				opened.push(target);
+				return true;
+			},
+		});
+		overlay.setUrl(url);
+		overlay.handleInput('\r');
+		assert.deepEqual(opened, [url]);
+	});
+
+	it('repaints while waiting and stops once finished', async () => {
+		const theme: ExtensionTheme = { fg: (_color, text) => text };
+		let paints = 0;
+		const overlay = new LinkOverlay(theme, () => undefined, () => undefined, {
+			copy: () => true,
+			open: () => true,
+			requestRender: () => {
+				paints += 1;
+			},
+			tickMs: 20,
+		});
+		overlay.setUrl(url, 300);
+		await new Promise((resolve) => setTimeout(resolve, 120));
+		assert.ok(paints >= 2, `expected periodic repaints, got ${paints}`);
+		overlay.finish();
+		const settled = paints;
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(paints, settled, 'the tick must stop after finish()');
+	});
+
+	it('warns when the link has likely expired', () => {
+		const theme: ExtensionTheme = { fg: (_color, text) => text };
+		let clock = Date.now();
+		const overlay = new LinkOverlay(theme, () => undefined, () => undefined, {
+			copy: () => true,
+			open: () => true,
+			now: () => clock,
+		});
+		overlay.setUrl(url, 60);
+		clock += 61_000;
+		assert.match(overlay.render(100).join('\n'), /可能已过期/);
+	});
+
 	it('opens and copies the link on demand', () => {
 		const theme: ExtensionTheme = { fg: (_color, text) => text };
 		const copied: string[] = [];

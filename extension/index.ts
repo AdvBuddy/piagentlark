@@ -165,7 +165,10 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 		closed = ctx.ui.custom<void>(
 			(tuiRef, theme, _keybindings, done) => {
 				tui = tuiRef;
-				overlay = new LinkOverlay(theme, done, () => controller.abort());
+				overlay = new LinkOverlay(theme, done, () => controller.abort(), {
+					// The card ticks once a second (validity window / wait time).
+					requestRender: () => tui?.requestRender(),
+				});
 				return overlay;
 			},
 			{
@@ -184,12 +187,16 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 			createOnly,
 			appId,
 			signal: controller.signal,
-			onUrl: (url) => {
+			onUrl: (url, expireInSeconds) => {
 				if (overlay) {
-					overlay.setUrl(url);
+					overlay.setUrl(url, expireInSeconds);
 					tui?.requestRender();
 				} else {
-					ctx.ui.notify(`打开链接完成授权：${url}`, 'info');
+					const validity =
+						expireInSeconds && expireInSeconds > 0
+							? `（约 ${Math.max(1, Math.round(expireInSeconds / 60))} 分钟内有效）`
+							: '';
+					ctx.ui.notify(`打开链接完成授权${validity}：${url}`, 'info');
 				}
 			},
 			onStatus: (status) => {
