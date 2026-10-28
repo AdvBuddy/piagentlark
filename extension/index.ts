@@ -14,7 +14,7 @@ import {
 	waitForSetupCredentials,
 	writeSetupScripts,
 } from '../src/plugin/service.js';
-import type { BridgePaths } from '../src/plugin/service.js';
+import type { BridgePaths, SetupWizardPlan } from '../src/plugin/service.js';
 import {
 	RegistrationError,
 	registrationEnv,
@@ -177,18 +177,50 @@ interface SetupTarget {
 	appId?: string;
 }
 
-/** Open the wizard in its own console window; false when that is not possible. */
-function openWizardWindow(scriptCmd: string): boolean {
+/**
+ * Open the wizard in its own terminal; false when the user has to do it.
+ * Local Windows gets a fresh console window via `start`; a running tmux or
+ * screen session gets a new window in that session — which works over SSH
+ * too, with pi keeping the original window.
+ */
+function openWizardTerminal(plan: SetupWizardPlan): boolean {
 	// `start` opens a fresh console for the wizard; the relaying cmd shares
 	// pi's console and exits immediately, so nothing flashes.
-	try {
-		const child = spawn('cmd', ['/c', 'start', '', scriptCmd], { detached: true, stdio: 'ignore' });
-		child.on('error', () => undefined);
-		child.unref();
-		return true;
-	} catch {
-		return false;
+	if (process.platform === 'win32' && !isRemoteSession()) {
+		try {
+			const child = spawn('cmd', ['/c', 'start', '', plan.scriptCmd], { detached: true, stdio: 'ignore' });
+			child.on('error', () => undefined);
+			child.unref();
+			return true;
+		} catch {
+			return false;
+		}
 	}
+	if (process.env.TMUX !== undefined) {
+		try {
+			const child = spawn('tmux', ['new-window', '-n', 'pi-lark', `sh "${plan.scriptSh}"`], {
+				stdio: 'ignore',
+			});
+			child.on('error', () => undefined);
+			child.unref();
+			return true;
+		} catch {
+			// Fall through to the manual instructions.
+		}
+	}
+	if (process.env.STY !== undefined) {
+		try {
+			const child = spawn('screen', ['-X', 'screen', '-t', 'pi-lark', 'sh', plan.scriptSh], {
+				stdio: 'ignore',
+			});
+			child.on('error', () => undefined);
+			child.unref();
+			return true;
+		} catch {
+			// Fall through to the manual instructions.
+		}
+	}
+	return false;
 }
 
 async function runSetupInTerminal(
@@ -196,32 +228,32 @@ async function runSetupInTerminal(
 	paths: BridgePaths,
 	target: SetupTarget,
 ): Promise<void> {
-	let manualCommand: string;
-	let scriptCmd: string;
+	let plan: SetupWizardPlan;
 	try {
 		const extraArgs = [
 			...(target.createOnly ? ['--force'] : target.appId ? ['--app-id', target.appId] : []),
 			...(readConfig(paths).FEISHU_DOMAIN === 'lark' ? ['--lark'] : []),
 		];
-		const plan = writeSetupScripts(paths, PACKAGE_ROOT, extraArgs);
-		manualCommand = plan.manualCommand;
-		scriptCmd = plan.scriptCmd;
+		plan = writeSetupScripts(paths, PACKAGE_ROOT, extraArgs);
 	} catch (error) {
 		ctx.ui.notify(describe(error), 'error');
 		return;
 	}
 
 	ctx.ui.setStatus(STATUS_KEY, 'lark ⏳ 等待授权确认');
-	const opened = process.platform === 'win32' && !isRemoteSession() && openWizardWindow(scriptCmd);
+	const opened = openWizardTerminal(plan);
+	// POSIX shells have job control, so a single terminal is enough there:
+	// suspend pi, run the wizard, `fg` back.
+	const suspendHint = process.platform !== 'win32' ? '；也可按 Ctrl+Z 挂起 pi，运行后用 fg 返回' : '';
 	const how = opened
 		? '已在新终端窗口中打开授权向导'
 		: isRemoteSession()
-			? 'SSH 远程会话，请另开一个终端运行下面的命令'
-			: '请新开一个终端标签/窗口运行下面的命令';
+			? `SSH 远程会话：请另开一个终端运行下面的命令${suspendHint}`
+			: `请新开一个终端标签/窗口运行下面的命令${suspendHint}`;
 	ctx.ui.notify(
 		[
 			'**飞书授权**：流程在独立终端中进行，pi 界面保持不动，完成后这里会自动继续。',
-			`${how}${opened ? '' : `：\n\`${manualCommand}\``}`,
+			`${how}${opened ? '' : `：\n\`${plan.manualCommand}\``}`,
 		].join('\n'),
 		'info',
 	);
