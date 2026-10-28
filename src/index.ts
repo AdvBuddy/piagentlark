@@ -10,7 +10,7 @@ import { Logger } from './logger.js';
 import { AgentPool, SessionStore } from './pi/agentPool.js';
 import { resolvePaths } from './plugin/service.js';
 import { loadDotEnv } from './util/dotenv.js';
-import { acquireInstanceLock, type InstanceLock } from './util/pid.js';
+import { acquireInstanceLock } from './util/pid.js';
 import { isRemoteSession } from './util/system.js';
 
 /** Written once the gateway is connected; the extension polls it for readiness. */
