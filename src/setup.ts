@@ -69,9 +69,10 @@ function printManualChecklist(): void {
 }
 
 /**
- * The env file this run writes: the service config when the pi extension
- * drives the wizard (`--service-env`), otherwise the repository `.env`. Path
- * policy lives in the service layer; the wizard only passes a boolean.
+ * Standalone setup wizard (`npm run setup`). It always writes `./.env` in the
+ * current working directory — no path ever crosses the command line. The pi
+ * extension does not launch this entry point: `/lark-setup` calls the
+ * registration API itself and writes `~/.pi/lark/.env` through the service layer.
  */
 async function main(): Promise<void> {
 	loadDotEnv();
@@ -81,9 +82,8 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	// The wizard always writes `./.env`: the pi extension's launcher script
-	// starts it with the service home as the working directory, so that is
-	// where the credentials land. No path ever crosses the command line.
+	// Always `./.env` in the working directory: running from the checkout writes
+	// the repository one, which is the only way this script is started.
 	const envText = existsSync(ENV_PATH) ? readFileSync(ENV_PATH, 'utf8') : '';
 	const existing = parseEnvText(envText);
 	const knownAppId = nonEmpty(existing.FEISHU_APP_ID) ?? nonEmpty(process.env.FEISHU_APP_ID);

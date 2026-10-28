@@ -1,5 +1,4 @@
 import { existsSync, rmSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { PiLarkBridge } from './bridge/bridge.js';
 import { cleanupInbox } from './bridge/attachments.js';
@@ -8,6 +7,7 @@ import { createGateway } from './lark/gateway.js';
 import { startWebhookServer } from './lark/webhook.js';
 import { Logger } from './logger.js';
 import { AgentPool, SessionStore } from './pi/agentPool.js';
+import { resolvePaths } from './plugin/service.js';
 import { loadDotEnv } from './util/dotenv.js';
 import { acquireInstanceLock } from './util/pid.js';
 import { isRemoteSession } from './util/system.js';
@@ -26,8 +26,7 @@ function stopFile(config) {
  * extension (`/lark-start`) can never run a second instance for the same bot.
  */
 function lockFile(config) {
-    const home = process.env.PI_LARK_HOME ?? path.join(os.homedir(), '.pi', 'lark');
-    return path.join(home, 'locks', `bridge-${config.lark.appId}.lock`);
+    return path.join(resolvePaths().home, 'locks', `bridge-${config.lark.appId}.lock`);
 }
 async function main() {
     loadDotEnv();

@@ -23,8 +23,8 @@ export function parseSetupArgs(argv, env = process.env) {
         const token = argv[index];
         if (!token)
             continue;
-        // A bare `--` separates launcher flags from wizard flags (node
-        // itself stops parsing there); everything after it is ours.
+        // A bare `--` separates node's own flags from ours (node stops parsing
+        // there); everything after it belongs to the wizard.
         if (token === '--')
             continue;
         const separator = token.indexOf('=');

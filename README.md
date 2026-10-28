@@ -22,7 +22,7 @@ pi install git:github.com/AdvBuddy/piagentlark
 
 | 命令 | 作用 |
 |---|---|
-| `/lark`、`/lark-setup` | 状态总览 / 扫码链接配置 |
+| `/lark`、`/lark-setup` | 状态总览 / 链接配置 |
 | `/lark-start`、`/lark-stop`、`/lark-restart` | 后台生命周期 |
 | `/lark-logs`、`/lark-config` | 查看日志 / 修改配置项 |
 | `/lark-uninstall` | 一键卸载：停止桥接器并删除全部本地数据 |

@@ -35,13 +35,13 @@ export function parseSetupArgs(argv: string[], env: NodeJS.ProcessEnv = process.
 		help: false,
 	};
 
-		for (let index = 0; index < argv.length; index += 1) {
-			const token = argv[index];
-			if (!token) continue;
-			// A bare `--` separates launcher flags from wizard flags (node
-			// itself stops parsing there); everything after it is ours.
-			if (token === '--') continue;
-			const separator = token.indexOf('=');
+	for (let index = 0; index < argv.length; index += 1) {
+		const token = argv[index];
+		if (!token) continue;
+		// A bare `--` separates node's own flags from ours (node stops parsing
+		// there); everything after it belongs to the wizard.
+		if (token === '--') continue;
+		const separator = token.indexOf('=');
 		const flag = separator >= 0 ? token.slice(0, separator) : token;
 		const inlineValue = separator >= 0 ? token.slice(separator + 1) : undefined;
 		const readValue = (): string | undefined => {
