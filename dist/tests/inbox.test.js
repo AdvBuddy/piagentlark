@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { after, describe, it } from 'node:test';
 import { cleanupInbox } from '../src/bridge/attachments.js';
 import { loadDotEnv, packageRoot } from '../src/util/dotenv.js';
@@ -44,8 +45,12 @@ describe('cleanupInbox', () => {
 });
 describe('packageRoot and loadDotEnv', () => {
     it('finds the package root from any module location', () => {
-        assert.equal(path.basename(packageRoot()), 'piclient');
-        assert.ok(packageRoot().endsWith('piclient'));
+        const root = packageRoot();
+        // The checkout directory can carry any name; the root is wherever
+        // package.json lives, and it must be an ancestor of this module.
+        assert.ok(existsSync(path.join(root, 'package.json')), 'root must contain package.json');
+        const here = path.resolve(fileURLToPath(import.meta.url));
+        assert.ok(here.startsWith(root + path.sep), 'root must be an ancestor of the module');
     });
     it('fills missing values and never overwrites existing ones', () => {
         const dir = tempDir('pi-lark-env-');
