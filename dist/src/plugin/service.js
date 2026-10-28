@@ -262,6 +262,41 @@ export async function stopBridge(paths, options = {}) {
 export function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+/**
+ * Refuse to recursively delete anything that is not clearly a dedicated
+ * service directory: filesystem roots, the home directory itself, the working
+ * directory, or anything sitting directly inside one of them.
+ */
+function assertSafeRemovalTarget(target) {
+    const resolved = path.resolve(target);
+    const parent = path.dirname(resolved);
+    const root = path.parse(resolved).root;
+    const tooBroad = resolved === root ||
+        resolved === os.homedir() ||
+        resolved === process.cwd() ||
+        parent === root ||
+        parent === os.homedir();
+    if (tooBroad)
+        throw new Error(`拒绝删除范围过大的目录：${resolved}`);
+}
+/**
+ * One-click uninstall: stop the background bridge gracefully, then remove
+ * every local trace — credentials, sessions, logs, locks under the service
+ * home, plus a separately configured data directory when it lives outside.
+ */
+export async function uninstallBridge(paths) {
+    const stopped = await stopBridge(paths);
+    const dataDir = resolveDataDir(paths);
+    const targets = [paths.home];
+    if (path.relative(paths.home, dataDir).startsWith('..'))
+        targets.push(dataDir);
+    for (const target of targets)
+        assertSafeRemovalTarget(target);
+    for (const target of targets) {
+        rmSync(target, { recursive: true, force: true });
+    }
+    return { stopped, removed: targets };
+}
 /** Last `lines` non-empty log lines (log files grow forever). */
 export function tailLog(file, lines = 40) {
     const text = readText(file);

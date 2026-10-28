@@ -25,6 +25,15 @@ pi install git:github.com/AdvBuddy/piagentlark
 | `/lark`、`/lark-setup` | 状态总览 / 扫码链接配置 |
 | `/lark-start`、`/lark-stop`、`/lark-restart` | 后台生命周期 |
 | `/lark-logs`、`/lark-config` | 查看日志 / 修改配置项 |
+| `/lark-uninstall` | 一键卸载：停止桥接器并删除全部本地数据 |
+
+## 卸载
+
+在 pi 中运行 `/lark-uninstall`（确认后停止后台桥接器，删除 `~/.pi/lark/` 下的凭据、会话、日志与附件），然后移除扩展本体：
+
+```bash
+pi remove git:github.com/AdvBuddy/piagentlark
+```
 
 ## 独立运行（不经 pi 扩展）
 

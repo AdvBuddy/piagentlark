@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readConfig, resolvePaths, runningBridge, saveConfig, startBridge, stopBridge, tailLog, waitForBridgeReady, } from '../src/plugin/service.js';
+import { readConfig, resolveDataDir, resolvePaths, runningBridge, saveConfig, startBridge, stopBridge, tailLog, uninstallBridge, waitForBridgeReady, } from '../src/plugin/service.js';
 import { RegistrationError, registrationEnv, requestAppRegistration, } from '../src/setup/registration.js';
 import { copyToClipboard, isRemoteSession } from '../src/util/system.js';
 /** Repo root: the package that ships `dist/` and `node_modules/`. */
@@ -26,6 +26,7 @@ const SUBCOMMANDS = [
     { value: 'restart', label: 'restart — 重启桥接器' },
     { value: 'logs', label: 'logs — 查看最近日志' },
     { value: 'config', label: 'config — 修改配置项' },
+    { value: 'uninstall', label: 'uninstall — 停止并删除全部本地数据' },
 ];
 function describe(error) {
     return error instanceof Error ? error.message : String(error);
@@ -47,7 +48,7 @@ function summary(paths) {
         `状态：${status}`,
         `配置：${paths.config}`,
         `日志：${paths.log}`,
-        `命令：/lark-setup · /lark-start · /lark-stop · /lark-restart · /lark-logs · /lark-config`,
+        `命令：/lark-setup · /lark-start · /lark-stop · /lark-restart · /lark-logs · /lark-config · /lark-uninstall`,
     ].join('\n');
 }
 function refreshStatus(ctx, paths) {
@@ -88,6 +89,32 @@ async function stopService(ctx, paths) {
     const stopped = await stopBridge(paths);
     refreshStatus(ctx, paths);
     ctx.ui.notify(stopped ? 'pi-lark 已停止' : 'pi-lark 未在运行', 'info');
+}
+/**
+ * One-click uninstall: stop the bridge, delete every local trace (including
+ * the Feishu credentials), then point at `pi remove` for the extension body.
+ */
+async function uninstallService(ctx, paths) {
+    const dataDir = resolveDataDir(paths);
+    const separateData = path.relative(paths.home, dataDir).startsWith('..');
+    const listing = separateData ? `${paths.home}\n${dataDir}` : paths.home;
+    const proceed = await ctx.ui.confirm('卸载 pi-lark', `将停止后台桥接器，并删除全部本地数据（飞书凭据、会话、日志、附件）：\n${listing}\n\n删除后需重新 /lark-setup 才能再次使用。继续？`);
+    if (!proceed) {
+        ctx.ui.notify('已取消，未删除任何数据。', 'info');
+        return;
+    }
+    try {
+        const result = await uninstallBridge(paths);
+        ctx.ui.setStatus(STATUS_KEY, undefined);
+        ctx.ui.notify([
+            '**pi-lark 本地数据已删除**：',
+            ...result.removed.map((dir) => `- ${dir}`),
+            '扩展本体请运行：`pi remove git:github.com/AdvBuddy/piagentlark`',
+        ].join('\n'), 'info');
+    }
+    catch (error) {
+        ctx.ui.notify(`卸载失败：${describe(error)}`, 'error');
+    }
 }
 async function showLogs(ctx, paths) {
     const text = tailLog(paths.log, 150);
@@ -225,6 +252,8 @@ export default function larkPlugin(pi) {
                     return showLogs(ctx, paths);
                 case 'config':
                     return editConfig(ctx, paths);
+                case 'uninstall':
+                    return uninstallService(ctx, paths);
                 default:
                     refreshStatus(ctx, paths);
                     ctx.ui.notify(summary(paths), 'info');
@@ -254,5 +283,9 @@ export default function larkPlugin(pi) {
     pi.registerCommand('lark-config', {
         description: '修改 pi-lark 配置（凭据、群策略、pi 工作目录等）',
         handler: async (_args, ctx) => editConfig(ctx, paths),
+    });
+    pi.registerCommand('lark-uninstall', {
+        description: '一键卸载：停止桥接器并删除全部本地数据（凭据、会话、日志）',
+        handler: async (_args, ctx) => uninstallService(ctx, paths),
     });
 }

@@ -19,6 +19,7 @@ import {
 	saveConfig,
 	startBridge,
 	tailLog,
+	uninstallBridge,
 	waitForBridgeReady,
 	writeBridgeState,
 } from '../src/plugin/service.js';
@@ -219,6 +220,27 @@ describe('waitForBridgeReady', () => {
 	});
 });
 
+describe('uninstallBridge', () => {
+	it('stops nothing and removes the whole service home', async () => {
+		const paths = tempPaths();
+		saveConfig(paths, { FEISHU_APP_ID: 'cli_x', FEISHU_APP_SECRET: 's' });
+		writeFileSync(paths.log, 'log\n', 'utf8');
+		mkdirSync(paths.data, { recursive: true });
+		writeFileSync(path.join(paths.data, 'sessions.json'), '{}\n', 'utf8');
+
+		const result = await uninstallBridge(paths);
+		assert.equal(result.stopped, false);
+		assert.deepEqual(result.removed, [paths.home]);
+		assert.equal(existsSync(paths.home), false);
+		assert.equal(existsSync(paths.config), false);
+	});
+
+	it('refuses targets that are too broad to be a service home', async () => {
+		await assert.rejects(uninstallBridge(resolvePaths(os.homedir())), /拒绝删除/);
+		await assert.rejects(uninstallBridge(resolvePaths(process.cwd())), /拒绝删除/);
+	});
+});
+
 describe('startBridge', () => {
 	it('refuses to start without credentials', () => {
 		const paths = tempPaths();
@@ -311,10 +333,19 @@ describe('lark extension', () => {
 		process.env.PI_LARK_HOME = home;
 		const { api, commands, events } = fakeApi();
 		larkPlugin(api);
-		assert.deepEqual(
-			[...commands.keys()].sort(),
-			['lark', 'lark-config', 'lark-logs', 'lark-restart', 'lark-setup', 'lark-start', 'lark-stop'],
-		);
+	assert.deepEqual(
+		[...commands.keys()].sort(),
+		[
+			'lark',
+			'lark-config',
+			'lark-logs',
+			'lark-restart',
+			'lark-setup',
+			'lark-start',
+			'lark-stop',
+			'lark-uninstall',
+		],
+	);
 		for (const command of commands.values()) assert.ok(command.description);
 		assert.ok(events.has('session_start'));
 	});
@@ -328,9 +359,10 @@ describe('lark extension', () => {
 		const complete = commands.get('lark')?.getArgumentCompletions;
 		assert.ok(complete);
 		const values = (prefix: string) => (complete(prefix) ?? []).map((item) => item.value);
-		assert.deepEqual(values(''), ['setup', 'start', 'stop', 'restart', 'logs', 'config']);
-		assert.deepEqual(values(' s'), ['setup', 'start', 'stop']);
-		assert.equal(complete('zz'), null);
+	assert.deepEqual(values(''), ['setup', 'start', 'stop', 'restart', 'logs', 'config', 'uninstall']);
+	assert.deepEqual(values(' s'), ['setup', 'start', 'stop']);
+	assert.deepEqual(values('un'), ['uninstall']);
+	assert.equal(complete('zz'), null);
 	});
 
 	it('/lark reports the summary and the status bar', async () => {
