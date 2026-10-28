@@ -1,5 +1,6 @@
 node_modules/
-dist/
+# dist/ ships the built bridge so `pi install git:...` works without dev
+# dependencies (pi installs only `dependencies`; tsx lives in devDependencies).
 .env
 .pi-lark*/
 .mimosa/
