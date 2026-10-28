@@ -1,27 +1,23 @@
 import path from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
 	readConfig,
 	resolvePaths,
 	runningBridge,
 	saveConfig,
-	setupSnapshot,
 	startBridge,
 	stopBridge,
 	tailLog,
 	waitForBridgeReady,
-	waitForSetupCredentials,
-	writeSetupScripts,
 } from '../src/plugin/service.js';
-import type { BridgePaths, SetupWizardPlan } from '../src/plugin/service.js';
+import type { BridgePaths } from '../src/plugin/service.js';
 import {
 	RegistrationError,
 	registrationEnv,
 	requestAppRegistration,
 } from '../src/setup/registration.js';
 import type { RegistrationResult } from '../src/setup/registration.js';
-import { copyToClipboard, isRemoteSession, openUrl } from '../src/util/system.js';
+import { copyToClipboard, isRemoteSession } from '../src/util/system.js';
 import type { ExtensionAPI, ExtensionCommandContext } from './pi.js';
 
 /** Repo root: the package that ships `dist/` and `node_modules/`. */
@@ -160,119 +156,11 @@ async function runSetup(ctx: ExtensionCommandContext, paths: BridgePaths): Promi
 		createOnly = choice.startsWith('新建');
 		appId = createOnly ? undefined : config.FEISHU_APP_ID;
 	}
-	const target = { createOnly, appId };
 
-	// pi's TUI cannot hand its terminal over (no suspend API, and Windows has
-	// no job control), so in TUI mode the wizard runs in a separate terminal
-	// and pi picks up the credentials when it finishes.
-	if (ctx.mode === 'tui' && ctx.hasUI) {
-		await runSetupInTerminal(ctx, paths, target);
-		return;
-	}
-	await runSetupInline(ctx, paths, target);
-}
-
-interface SetupTarget {
-	createOnly: boolean;
-	appId?: string;
-}
-
-/**
- * Open the wizard in its own terminal; false when the user has to do it.
- * Local Windows gets a fresh console window via `start`; a running tmux or
- * screen session gets a new window in that session — which works over SSH
- * too, with pi keeping the original window.
- */
-function openWizardTerminal(plan: SetupWizardPlan): boolean {
-	// `start` opens a fresh console for the wizard; the relaying cmd shares
-	// pi's console and exits immediately, so nothing flashes.
-	if (process.platform === 'win32' && !isRemoteSession()) {
-		try {
-			const child = spawn('cmd', ['/c', 'start', '', plan.scriptCmd], { detached: true, stdio: 'ignore' });
-			child.on('error', () => undefined);
-			child.unref();
-			return true;
-		} catch {
-			return false;
-		}
-	}
-	if (process.env.TMUX !== undefined) {
-		try {
-			const child = spawn('tmux', ['new-window', '-n', 'pi-lark', `sh "${plan.scriptSh}"`], {
-				stdio: 'ignore',
-			});
-			child.on('error', () => undefined);
-			child.unref();
-			return true;
-		} catch {
-			// Fall through to the manual instructions.
-		}
-	}
-	if (process.env.STY !== undefined) {
-		try {
-			const child = spawn('screen', ['-X', 'screen', '-t', 'pi-lark', 'sh', plan.scriptSh], {
-				stdio: 'ignore',
-			});
-			child.on('error', () => undefined);
-			child.unref();
-			return true;
-		} catch {
-			// Fall through to the manual instructions.
-		}
-	}
-	return false;
-}
-
-async function runSetupInTerminal(
-	ctx: ExtensionCommandContext,
-	paths: BridgePaths,
-	target: SetupTarget,
-): Promise<void> {
-	let plan: SetupWizardPlan;
-	try {
-		const extraArgs = [
-			...(target.createOnly ? ['--force'] : target.appId ? ['--app-id', target.appId] : []),
-			...(readConfig(paths).FEISHU_DOMAIN === 'lark' ? ['--lark'] : []),
-		];
-		plan = writeSetupScripts(paths, PACKAGE_ROOT, extraArgs);
-	} catch (error) {
-		ctx.ui.notify(describe(error), 'error');
-		return;
-	}
-
-	ctx.ui.setStatus(STATUS_KEY, 'lark ⏳ 等待授权确认');
-	const opened = openWizardTerminal(plan);
-	// POSIX shells have job control, so a single terminal is enough there:
-	// suspend pi, run the wizard, `fg` back.
-	const suspendHint = process.platform !== 'win32' ? '；也可按 Ctrl+Z 挂起 pi，运行后用 fg 返回' : '';
-	const how = opened
-		? '已在新终端窗口中打开授权向导'
-		: isRemoteSession()
-			? `SSH 远程会话：请另开一个终端运行下面的命令${suspendHint}`
-			: `请新开一个终端标签/窗口运行下面的命令${suspendHint}`;
-	ctx.ui.notify(
-		[
-			'**飞书授权**：流程在独立终端中进行，pi 界面保持不动，完成后这里会自动继续。',
-			`${how}${opened ? '' : `：\n\`${plan.manualCommand}\``}`,
-		].join('\n'),
-		'info',
-	);
-
-	const appId = await waitForSetupCredentials(paths, setupSnapshot(paths), 10 * 60_000);
-	refreshStatus(ctx, paths);
-	if (!appId) {
-		ctx.ui.notify('等待授权超时（10 分钟）。配置写入后可运行 /lark-start，或重新运行 /lark-setup。', 'warning');
-		return;
-	}
-	ctx.ui.notify(`授权完成：${appId}（配置已写入 ${paths.config}）`, 'info');
-	if (!runningBridge(paths) && (await ctx.ui.confirm('启动', '现在启动 pi-lark 并连接飞书？'))) {
-		await startService(ctx, paths);
-	}
-}
-
-async function runSetupInline(ctx: ExtensionCommandContext, paths: BridgePaths, target: SetupTarget): Promise<void> {
-	// Everything happens in the main TUI: notifications for the link and its
-	// outcome, the status bar for the waiting phase.
+	// Everything is reported in pi itself: notifications for the link, the
+	// status bar for the waiting phase. Nothing opens by itself — over SSH
+	// especially, the user opens the link on their own machine, in their own
+	// browser, when they choose to.
 	ctx.ui.setStatus(STATUS_KEY, 'lark ⏳ 等待授权确认');
 	let expiryTimer: NodeJS.Timeout | undefined;
 
@@ -280,36 +168,26 @@ async function runSetupInline(ctx: ExtensionCommandContext, paths: BridgePaths, 
 	try {
 		result = await requestAppRegistration({
 			domain: readConfig(paths).FEISHU_DOMAIN === 'lark' ? 'lark' : 'feishu',
-			createOnly: target.createOnly,
-			appId: target.appId,
+			createOnly,
+			appId,
 			onUrl: (url, expireInSeconds) => {
 				const minutes = Math.max(1, Math.round((expireInSeconds || 300) / 60));
 				const remote = isRemoteSession();
 				const copied = copyToClipboard(url);
 				const clipLine = remote
 					? copied
-						? '已尝试通过终端把链接写入本地剪贴板（OSC 52）'
+						? '已尝试通过终端把链接写入本地剪贴板（OSC 52），请粘贴到本地浏览器打开'
 						: '未能写入剪贴板，请手动复制下面的链接'
 					: copied
-						? '链接已复制到剪贴板，正在尝试在浏览器中打开…'
+						? '链接已复制到剪贴板，粘贴到浏览器打开即可'
 						: '未能复制到剪贴板，请手动复制下面的链接';
 				const whereLine = remote
-					? 'SSH 远程会话：请在【本地】浏览器打开链接完成授权，确认后这里会自动继续'
+					? 'SSH 远程会话：请在本地浏览器完成授权，确认后这里会自动继续'
 					: '在浏览器中完成授权，确认后这里会自动继续';
 				ctx.ui.notify(
 					[`**飞书授权链接**（约 ${minutes} 分钟内有效）`, clipLine, whereLine, url].join('\n'),
 					'info',
 				);
-				if (remote) return;
-				// The verdict settles on the launcher's real exit code; without a
-				// card there is no key to press, so the browser opens by itself.
-				void openUrl(url).then((outcome) => {
-					if (outcome === 'opened') {
-						ctx.ui.notify('已在浏览器中打开授权页面，完成后这里会自动继续。', 'info');
-					} else {
-						ctx.ui.notify('未能自动打开浏览器，请把剪贴板中的链接粘贴到浏览器打开。', 'warning');
-					}
-				});
 				if (expireInSeconds > 0) {
 					expiryTimer = setTimeout(() => {
 						ctx.ui.notify('授权链接可能已过期，若长时间没有响应，请重新运行 /lark-setup 获取新链接。', 'warning');

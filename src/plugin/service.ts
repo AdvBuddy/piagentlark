@@ -6,7 +6,6 @@ import {
 	openSync,
 	readFileSync,
 	rmSync,
-	statSync,
 	writeFileSync,
 } from 'node:fs';
 import os from 'node:os';
@@ -143,103 +142,6 @@ export function resolveBridgeCommand(root: string): string[] | undefined {
 	const built = path.join(root, 'dist', 'src', 'index.js');
 	if (existsSync(built)) return [built];
 	return undefined;
-}
-
-/** Same as `resolveBridgeCommand`, but for the interactive setup wizard. */
-export function resolveSetupCommand(root: string): string[] | undefined {
-	const loader = path.join(root, 'node_modules', 'tsx', 'dist', 'loader.mjs');
-	const entry = path.join(root, 'src', 'setup.ts');
-	if (existsSync(loader) && existsSync(entry)) return ['--import', pathToFileURL(loader).href, entry];
-	const built = path.join(root, 'dist', 'src', 'setup.js');
-	if (existsSync(built)) return [built];
-	return undefined;
-}
-
-export interface SetupWizardPlan {
-	/** Windows batch launcher for the wizard. */
-	scriptCmd: string;
-	/** POSIX shell launcher for the wizard. */
-	scriptSh: string;
-	/** Copy-pasteable command for the current platform. */
-	manualCommand: string;
-}
-
-/**
- * Write small launcher scripts for the setup wizard into the service home, so
- * a second terminal can run the authorization flow without pi's UI: the
- * wizard writes credentials to `paths.config`, which the extension watches.
- */
-export function writeSetupScripts(paths: BridgePaths, root: string, extraArgs: string[]): SetupWizardPlan {
-	const command = resolveSetupCommand(root);
-	if (!command) throw new Error(`找不到授权向导入口，请在 ${root} 运行 npm install（或 npm run build）`);
-	// The `--` keeps node's own option parser away from the wizard flags
-	// (node eats known options even after the entry file). The script starts
-	// in the service home, so the wizard's plain `./.env` write lands on the
-	// service config — no path ever crosses the command line.
-	const args = [...command, '--', '--no-start', ...extraArgs];
-	const quoted = [process.execPath, ...args].map((part) => `"${part}"`).join(' ');
-	const scriptCmd = path.join(paths.home, 'setup.cmd');
-	const scriptSh = path.join(paths.home, 'setup.sh');
-	mkdirSync(paths.home, { recursive: true });
-	writeFileSync(
-		scriptCmd,
-		[
-			'@echo off',
-			'rem 由 pi-lark 生成：在独立终端中运行飞书授权向导',
-			`cd /d "${paths.home}"`,
-			`${quoted}\n`,
-		].join('\r\n'),
-		'utf8',
-	);
-	writeFileSync(
-		scriptSh,
-		[
-			'#!/bin/sh',
-			'# 由 pi-lark 生成：在独立终端中运行飞书授权向导',
-			`cd "${paths.home}" && exec ${quoted}\n`,
-		].join('\n'),
-		'utf8',
-	);
-	const manualCommand = process.platform === 'win32' ? scriptCmd : `sh ${scriptSh}`;
-	return { scriptCmd, scriptSh, manualCommand };
-}
-
-export interface SetupSnapshot {
-	/** App id in the config when the wait started (empty when unconfigured). */
-	appId: string;
-	/** Config mtime when the wait started; updates rewrite the same app id. */
-	mtimeMs: number;
-}
-
-/** Credentials state before the wizard runs, for change detection. */
-export function setupSnapshot(paths: BridgePaths): SetupSnapshot {
-	try {
-		const appId = readConfig(paths).FEISHU_APP_ID?.trim() ?? '';
-		return { appId, mtimeMs: statSync(paths.config).mtimeMs };
-	} catch {
-		return { appId: '', mtimeMs: 0 };
-	}
-}
-
-/**
- * Wait until the service config changes — the signal that the wizard in the
- * other terminal finished. Polls instead of watching for the same behaviour
- * across platforms and network file systems.
- */
-export async function waitForSetupCredentials(
-	paths: BridgePaths,
-	before: SetupSnapshot,
-	timeoutMs: number,
-): Promise<string | undefined> {
-	const deadline = Date.now() + timeoutMs;
-	for (;;) {
-		const now = setupSnapshot(paths);
-		if (now.appId && (now.appId !== before.appId || now.mtimeMs > before.mtimeMs)) {
-			return now.appId;
-		}
-		if (Date.now() >= deadline) return undefined;
-		await delay(2_000);
-	}
 }
 
 /**

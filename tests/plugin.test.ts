@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,16 +15,12 @@ import {
 	resolveBridgeCommand,
 	resolveDataDir,
 	resolvePaths,
-	resolveSetupCommand,
 	runningBridge,
 	saveConfig,
-	setupSnapshot,
 	startBridge,
 	tailLog,
 	waitForBridgeReady,
-	waitForSetupCredentials,
 	writeBridgeState,
-	writeSetupScripts,
 } from '../src/plugin/service.js';
 import type { BridgePaths } from '../src/plugin/service.js';
 
@@ -223,50 +219,7 @@ describe('waitForBridgeReady', () => {
 	});
 });
 
-	describe('resolveSetupCommand', () => {
-		it('points the wizard at the tsx loader entry', () => {
-			const command = resolveSetupCommand(process.cwd());
-			assert.ok(command);
-			assert.equal(command[0], '--import');
-			assert.ok(existsSync(fileURLToPath(command[1]!)));
-			assert.equal(command[2], path.join(process.cwd(), 'src', 'setup.ts'));
-		});
-	});
-
-	describe('writeSetupScripts and waitForSetupCredentials', () => {
-		it('writes launcher scripts aimed at the service config', () => {
-			const paths = tempPaths();
-			const plan = writeSetupScripts(paths, process.cwd(), ['--app-id', 'cli_x']);
-			assert.ok(existsSync(plan.scriptCmd));
-			assert.ok(existsSync(plan.scriptSh));
-			const batch = readFileSync(plan.scriptCmd, 'utf8');
-			// The script starts in the service home so the wizard's plain ./.env
-			// write lands on the service config.
-			assert.match(batch, new RegExp(`cd /d "${paths.home.replace(/\\/g, '\\\\')}"`));
-			assert.match(batch, /setup\.(ts|js)" "--"/);
-			assert.match(batch, /"--no-start"/);
-			assert.match(batch, /"--app-id" "cli_x"/);
-			assert.match(plan.manualCommand, /setup\.(cmd|sh)/);
-		});
-
-		it('resolves once credentials appear and tolerates timeouts', async () => {
-			const paths = tempPaths();
-			const before = setupSnapshot(paths);
-			// Nothing appears: the short wait times out.
-			assert.equal(await waitForSetupCredentials(paths, before, 10), undefined);
-			// The wizard writes credentials while we wait.
-			const late = tempPaths();
-			const start = setupSnapshot(late);
-			setTimeout(() => saveConfig(late, { FEISHU_APP_ID: 'cli_new', FEISHU_APP_SECRET: 's' }), 30);
-			assert.equal(await waitForSetupCredentials(late, start, 5_000), 'cli_new');
-			// Updating the same app id is detected through the mtime.
-			const again = setupSnapshot(late);
-			setTimeout(() => saveConfig(late, { FEISHU_APP_NAME: 'x' }), 30);
-			assert.equal(await waitForSetupCredentials(late, again, 5_000), 'cli_new');
-		});
-	});
-
-	describe('startBridge', () => {
+describe('startBridge', () => {
 	it('refuses to start without credentials', () => {
 		const paths = tempPaths();
 		assert.throws(
